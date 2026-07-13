@@ -1,0 +1,36 @@
+# Config cho webtoon-translator pipeline
+# Copy file này và chỉnh sửa theo nhu cầu.
+
+# Đường dẫn thư mục
+input_dir: "input"          # Folder chứa ảnh raw (.jpeg, 1 ảnh = 1 chương)
+output_dir: "output"        # Folder output (ảnh đã chèn text Vietnamese)
+work_dir: "work"            # Working directory (tiles, translated, progress)
+fonts_dir: "fonts"          # Folder chứa font Vietnamese
+glossary_file: "glossary.json"   # File glossary tích lũy xuyên suốt series
+progress_file: "work/progress.json"
+
+# Ollama Cloud
+# Set OLLAMA_API_KEY trong env trước khi chạy:
+#   export OLLAMA_API_KEY=your_key_here
+ollama_base_url: "https://ollama.com/v1"
+# Model có sẵn trên Ollama Cloud:
+#   - qwen3.5          (đa ngôn ngữ, tốt cho Korean→Vietnamese)
+#   - deepseek-v4-pro  (chất lượng cao, chậm hơn)
+#   - deepseek-v4-flash (nhanh, rẻ)
+#   - glm-5.2          (tốt cho Asian languages)
+ollama_model: "qwen3.5"
+
+# manga-image-translator settings
+target_lang: "Vietnamese"
+source_lang: "Korean"
+context_size: 3             # Số tile trước truyền làm context (giữ mạch truyện)
+batch_size: 3              # Số ảnh xử lý song song
+use_gpu: true              # Bật GPU acceleration (MPS trên Apple Silicon)
+
+# Pre-split settings (cắt ảnh dài webtoon)
+tile_height: 6000          # Chiều cao mỗi tile (px) - dưới 10240px an toàn
+overlap: 200               # Overlap giữa tiles (px) - tránh cắt đôi bubble
+
+# Glossary settings
+glossary_extract_llm: true   # Dùng LLM extract proper nouns (chất lượng cao)
+glossary_export_mit: true    # Export sang format manga-image-translator

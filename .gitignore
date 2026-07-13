@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Pipeline working data (không commit)
+work/tiles/
+work/translated/
+work/progress.json
+work/glossary_mit.txt
+
+# Input/Output (không commit ảnh)
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+
+# Glossary (có thể commit nếu muốn share)
+glossary.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

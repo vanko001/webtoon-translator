@@ -1,0 +1,20 @@
+# Dependencies cho webtoon-translator pipeline
+# Cài: pip install -r requirements.txt
+
+# Image processing
+Pillow>=10.0.0
+
+# Config
+PyYAML>=6.0
+
+# OpenAI client (cho Ollama Cloud + glossary LLM extract)
+openai>=1.0.0
+
+# manga-image-translator (engine chính)
+# Cài riêng vì có nhiều dependency GPU/OCR:
+#   pip install manga-image-translator
+# Hoặc clone repo:
+#   git clone https://github.com/zyddnys/manga-image-translator
+#   cd manga-image-translator && pip install -r requirements.txt
+#   pip install -e .
+manga-image-translator>=0.0.1
