@@ -21,7 +21,15 @@ case "$1" in
       echo "Web ĐANG TẮT (webctl on để bật)"
     fi
     ;;
+  keep-awake)
+    launchctl load ~/Library/LaunchAgents/com.vanko.caffeinate.plist 2>/dev/null
+    echo "Máy sẽ KHÔNG ngủ — truy cập từ xa luôn sẵn sàng"
+    ;;
+  sleep-ok)
+    launchctl unload ~/Library/LaunchAgents/com.vanko.caffeinate.plist 2>/dev/null
+    echo "Máy được phép ngủ (tiết kiệm điện) — khi ngủ sẽ KHÔNG truy cập từ xa được"
+    ;;
   *)
-    echo "Cách dùng: webctl on | off | restart | status"
+    echo "Cách dùng: webctl on | off | restart | status | keep-awake | sleep-ok"
     ;;
 esac
