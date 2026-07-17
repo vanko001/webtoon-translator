@@ -6,7 +6,7 @@
 <pre id="log">(log của job đang chạy sẽ hiện ở đây)</pre>
 <p><button class="gray" onclick="stopJob()">⏹ Dừng job hiện tại</button></p>
 <table id="tbl">
-  <thead><tr><th>Bộ truyện</th><th>Dịch</th><th>Dung lượng</th><th>Trạng thái</th><th></th></tr></thead>
+  <thead><tr><th>Bộ truyện</th><th>Dịch</th><th>Local/Drive</th><th>Nguồn (MB)</th><th>Trạng thái</th><th></th></tr></thead>
   <tbody></tbody>
 </table>
 <h3>Lịch sử</h3>
@@ -21,10 +21,13 @@ async function refresh() {
   const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
   for (const s of d.series) {
     const tr = document.createElement('tr');
-    const busy = s.state === 'đang dịch' || s.state === 'xếp hàng' || s.state === 'hoàn thành';
-    tr.innerHTML = `<td>${s.name}</td><td>${s.out}/${s.in}</td><td>${s.mb} MB</td>
+    const busy = ['đang dịch','đang đẩy Drive','xếp hàng','hoàn thành'].includes(s.state);
+    const canOffload = d.drive_ready && s.local > 0 && !['đang dịch','đang đẩy Drive','xếp hàng'].includes(s.state);
+    tr.innerHTML = `<td>${s.name}</td><td>${s.out}/${s.in}</td>
+      <td>${s.local}/${s.drive}</td><td>${s.mb} MB</td>
       <td><span class="badge ${badge(s.state)}">${s.state}</span></td>
-      <td><button ${busy?'disabled':''} onclick="translateS('${s.name}')">Dịch</button></td>`;
+      <td><button ${busy?'disabled':''} onclick="translateS('${s.name}')">Dịch</button>
+          ${canOffload?`<button class="gray" onclick="offloadS('${s.name}')">☁️ Drive</button>`:''}</td>`;
     tb.appendChild(tr);
   }
   const hb = document.querySelector('#hist tbody'); hb.innerHTML = '';
@@ -34,6 +37,12 @@ async function refresh() {
       <td>${h.exit===0?'✅ OK':'❌ exit '+h.exit}</td>`;
     hb.appendChild(tr);
   }
+}
+async function offloadS(name) {
+  if (!confirm(`Đẩy toàn bộ ảnh gốc "${name}" lên Google Drive rồi XÓA bản local (web vẫn đọc được, tự tải từ Drive khi cần)?`)) return;
+  const r = await fetch('/api/offload/'+encodeURIComponent(name), {method:'POST'});
+  const d = await r.json().catch(()=>({}));
+  if (!r.ok) alert(d.detail || 'Lỗi'); else refresh();
 }
 async function translateS(name) {
   const r = await fetch('/api/translate/'+encodeURIComponent(name), {method:'POST'});

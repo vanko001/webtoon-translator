@@ -42,6 +42,72 @@ SLICE_QUALITY = 82
 CACHE_LIMIT_GB = 1.2
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
+# Google Drive qua rclone: ảnh gốc có thể nằm trên Drive (private) thay vì local.
+# Đọc chương chưa có local → tự tải từ Drive về, cắt lát, chỉ giữ lát trong cache.
+RCLONE = shutil.which("rclone") or "/opt/homebrew/bin/rclone"
+REMOTE = "gdrive:webtoon-output"
+
+
+def rclone_ready() -> bool:
+    try:
+        out = subprocess.run([RCLONE, "listremotes"], capture_output=True, text=True, timeout=10)
+        return "gdrive:" in out.stdout
+    except Exception:
+        return False
+
+
+_remote_cache: dict = {"t": 0.0, "data": {}}
+
+
+def remote_chapters() -> dict[str, list[str]]:
+    """Danh sách chương trên Drive theo series (cache 5 phút)."""
+    if time.time() - _remote_cache["t"] < 300:
+        return _remote_cache["data"]
+    data: dict[str, list[str]] = {}
+    if rclone_ready():
+        try:
+            out = subprocess.run(
+                [RCLONE, "lsjson", REMOTE, "--recursive", "--files-only"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if out.returncode == 0:
+                for e in json.loads(out.stdout):
+                    p = e.get("Path", "")
+                    if "/" in p:
+                        s, f = p.split("/", 1)
+                        if "/" not in f and Path(f).suffix.lower() in IMG_EXTS:
+                            data.setdefault(s, []).append(f)
+                for s in data:
+                    data[s].sort(key=natural_key)
+        except Exception:
+            data = _remote_cache["data"]
+    _remote_cache.update(t=time.time(), data=data)
+    return _remote_cache["data"]
+
+
+def merged_chapters(series: str) -> list[str]:
+    """Chương của 1 bộ: local ∪ Drive."""
+    merged = set(list_images(OUTPUT / series)) | set(remote_chapters().get(series, []))
+    return sorted(merged, key=natural_key)
+
+
+def ensure_original(series: str, chapter: str) -> tuple[Path, bool]:
+    """Trả về (đường dẫn ảnh gốc, có phải file tạm tải từ Drive không)."""
+    local = OUTPUT / series / chapter
+    if local.is_file():
+        return local, False
+    if chapter not in remote_chapters().get(series, []):
+        raise HTTPException(404, "Không có chương này (cả local lẫn Drive)")
+    tmp = CACHE / "_dl" / series / chapter
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(
+        [RCLONE, "copyto", f"{REMOTE}/{series}/{chapter}", str(tmp)],
+        capture_output=True, text=True, timeout=300,
+    )
+    if r.returncode != 0 or not tmp.is_file():
+        raise HTTPException(502, f"Tải từ Drive lỗi: {r.stderr[-200:]}")
+    return tmp, True
+
 load_dotenv(REPO / ".env")
 
 app = FastAPI(title="Webtoon Reader")
@@ -104,12 +170,13 @@ class JobManager:
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def enqueue(self, series: str) -> str:
+    def enqueue(self, series: str, kind: str = "translate") -> str:
+        label = f"{kind}:{series}"
         with self.lock:
-            if series == self.current or series in self.queued:
+            if label == self.current or label in self.queued:
                 return "đã có trong hàng đợi"
-            self.queued.append(series)
-        self.q.put(series)
+            self.queued.append(label)
+        self.q.put(label)
         return "đã xếp hàng"
 
     def stop_current(self) -> str:
@@ -119,32 +186,45 @@ class JobManager:
                 return f"đã dừng {self.current}"
         return "không có job đang chạy"
 
+    def _build_cmd(self, kind: str, series: str) -> list[str]:
+        if kind == "offload":
+            # move = upload có verify checksum rồi XÓA file local
+            return [RCLONE, "move", str(OUTPUT / series), f"{REMOTE}/{series}",
+                    "--checksum", "--transfers", "4", "-v"]
+        cfg_dir = REPO / "work" / "batch-configs"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_path = cfg_dir / f"{series}.yaml"
+        cfg_path.write_text(
+            CONFIG_TMPL.format(input_dir=str(MANHWA / series), name=series),
+            encoding="utf-8",
+        )
+        return [str(PY), "run_pipeline.py", "--config", str(cfg_path), "--resume"]
+
     def _worker(self):
         while True:
-            series = self.q.get()
+            label = self.q.get()
+            kind, series = label.split(":", 1)
             with self.lock:
-                self.queued.remove(series)
-                self.current = series
+                self.queued.remove(label)
+                self.current = label
             LOGS.mkdir(parents=True, exist_ok=True)
-            log_path = LOGS / f"{series}-{int(time.time())}.log"
+            log_path = LOGS / f"{kind}-{series}-{int(time.time())}.log"
             self.current_log = log_path
-            cfg_dir = REPO / "work" / "batch-configs"
-            cfg_dir.mkdir(parents=True, exist_ok=True)
-            cfg_path = cfg_dir / f"{series}.yaml"
-            cfg_path.write_text(
-                CONFIG_TMPL.format(input_dir=str(MANHWA / series), name=series),
-                encoding="utf-8",
-            )
             t0 = time.time()
             with open(log_path, "w") as log:
                 self.proc = subprocess.Popen(
-                    [str(PY), "run_pipeline.py", "--config", str(cfg_path), "--resume"],
+                    self._build_cmd(kind, series),
                     cwd=REPO, stdout=log, stderr=subprocess.STDOUT,
                 )
                 rc = self.proc.wait()
+            if kind == "offload":
+                _remote_cache["t"] = 0  # bust cache danh sách Drive
+                d = OUTPUT / series
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
             with self.lock:
                 self.history.insert(0, {
-                    "series": series, "exit": rc,
+                    "series": label, "exit": rc,
                     "minutes": round((time.time() - t0) / 60, 1),
                     "at": time.strftime("%H:%M %d/%m"),
                 })
@@ -158,10 +238,10 @@ jobs = JobManager()
 
 # ---------------------------------------------------------------- slicing
 def chapter_slices(series: str, chapter: str) -> list[str]:
-    """Trả về danh sách file lát của 1 chương, cắt nếu chưa có trong cache."""
-    src = OUTPUT / series / chapter
-    if not src.is_file():
-        raise HTTPException(404, "Không có chương này")
+    """Trả về danh sách file lát của 1 chương, cắt nếu chưa có trong cache.
+
+    Ảnh gốc lấy từ local, không có thì tự tải từ Drive (xóa file tạm sau khi cắt).
+    """
     cdir = CACHE / series / Path(chapter).stem
     done_marker = cdir / ".done"
     if done_marker.exists():
@@ -169,6 +249,7 @@ def chapter_slices(series: str, chapter: str) -> list[str]:
         return sorted(
             (f for f in os.listdir(cdir) if f.endswith(".jpg")), key=natural_key
         )
+    src, is_tmp = ensure_original(series, chapter)
     cdir.mkdir(parents=True, exist_ok=True)
     img = Image.open(src).convert("RGB")
     w, h = img.size
@@ -179,6 +260,9 @@ def chapter_slices(series: str, chapter: str) -> list[str]:
         piece.save(cdir / name, quality=SLICE_QUALITY, progressive=True)
         names.append(name)
     done_marker.touch()
+    if is_tmp:
+        img.close()
+        src.unlink(missing_ok=True)
     _evict_cache()
     return names
 
@@ -207,11 +291,14 @@ def _evict_cache():
 # ---------------------------------------------------------------- pages
 @app.get("/", response_class=HTMLResponse)
 def library():
+    local = {
+        d for d in (os.listdir(OUTPUT) if OUTPUT.is_dir() else [])
+        if (MANHWA / d).is_dir() and list_images(OUTPUT / d)
+    }
+    names = sorted(local | set(remote_chapters().keys()), key=natural_key)
     series = []
-    for name in sorted(os.listdir(OUTPUT) if OUTPUT.is_dir() else [], key=natural_key):
-        if not (MANHWA / name).is_dir():  # bỏ archive -v1/-v2, model-test...
-            continue
-        chapters = list_images(OUTPUT / name)
+    for name in names:
+        chapters = merged_chapters(name)
         if chapters:
             series.append({"name": name, "n": len(chapters), "first": Path(chapters[0]).stem})
     return jinja.get_template("library.html").render(series=series)
@@ -219,7 +306,7 @@ def library():
 
 @app.get("/doc/{series}", response_class=HTMLResponse)
 def series_page(series: str):
-    chapters = list_images(OUTPUT / series)
+    chapters = merged_chapters(series)
     if not chapters:
         raise HTTPException(404)
     chs = [{"file": c, "stem": Path(c).stem} for c in chapters]
@@ -228,7 +315,7 @@ def series_page(series: str):
 
 @app.get("/doc/{series}/{stem}", response_class=HTMLResponse)
 def reader(series: str, stem: str):
-    chapters = list_images(OUTPUT / series)
+    chapters = merged_chapters(series)
     stems = [Path(c).stem for c in chapters]
     if stem not in stems:
         raise HTTPException(404)
@@ -247,15 +334,18 @@ def cover(series: str):
     """Thumbnail bìa: phần đầu chương 1, rộng 480px."""
     p = CACHE / series / "_cover.jpg"
     if not p.is_file():
-        chapters = list_images(OUTPUT / series)
+        chapters = merged_chapters(series)
         if not chapters:
             raise HTTPException(404)
-        img = Image.open(OUTPUT / series / chapters[0]).convert("RGB")
+        src, is_tmp = ensure_original(series, chapters[0])
+        img = Image.open(src).convert("RGB")
         w, h = img.size
         img = img.crop((0, 0, w, min(h, int(w * 4 / 3))))
         img.thumbnail((480, 640))
         p.parent.mkdir(parents=True, exist_ok=True)
         img.save(p, quality=80)
+        if is_tmp:
+            src.unlink(missing_ok=True)
     return FileResponse(p, media_type="image/jpeg")
 
 
@@ -281,10 +371,14 @@ def api_status():
         if not d.is_dir():
             continue
         n_in = len(list_images(d))
-        n_out = len(list_images(OUTPUT / name))
-        if name == jobs.current:
+        n_local = len(list_images(OUTPUT / name))
+        n_drive = len(remote_chapters().get(name, []))
+        n_out = max(n_local, n_drive)
+        if jobs.current == f"translate:{name}":
             state = "đang dịch"
-        elif name in jobs.queued:
+        elif jobs.current == f"offload:{name}":
+            state = "đang đẩy Drive"
+        elif any(q.endswith(f":{name}") for q in jobs.queued):
             state = "xếp hàng"
         elif n_out == 0:
             state = "chưa dịch"
@@ -293,10 +387,22 @@ def api_status():
         else:
             state = "hoàn thành"
         size_mb = round(sum(f.stat().st_size for f in d.iterdir() if f.is_file()) / 1e6)
-        rows.append({"name": name, "in": n_in, "out": n_out, "state": state, "mb": size_mb})
+        rows.append({"name": name, "in": n_in, "out": n_out, "local": n_local,
+                     "drive": n_drive, "state": state, "mb": size_mb})
     disk_free_gb = round(shutil.disk_usage("/").free / 1e9, 1)
     return {"series": rows, "current": jobs.current, "queued": jobs.queued,
-            "history": jobs.history, "disk_free_gb": disk_free_gb}
+            "history": jobs.history, "disk_free_gb": disk_free_gb,
+            "drive_ready": rclone_ready()}
+
+
+@app.post("/api/offload/{series}")
+def api_offload(series: str):
+    """Đẩy ảnh gốc của 1 bộ lên Drive (verify checksum xong mới xóa local)."""
+    if not rclone_ready():
+        raise HTTPException(400, "Chưa kết nối Google Drive — chạy: rclone config create gdrive drive")
+    if not list_images(OUTPUT / series):
+        raise HTTPException(404, "Bộ này không có ảnh local để đẩy")
+    return {"result": jobs.enqueue(series, kind="offload")}
 
 
 @app.post("/api/translate/{series}")

@@ -21,6 +21,10 @@ case "$1" in
       echo "Web ĐANG TẮT (webctl on để bật)"
     fi
     ;;
+  offload)
+    [ -z "$2" ] && { echo "Cách dùng: webctl offload <tên-bộ>"; exit 1; }
+    curl -s -X POST "localhost:8765/api/offload/$2"; echo
+    ;;
   keep-awake)
     launchctl load ~/Library/LaunchAgents/com.vanko.caffeinate.plist 2>/dev/null
     echo "Máy sẽ KHÔNG ngủ — truy cập từ xa luôn sẵn sàng"
@@ -30,6 +34,6 @@ case "$1" in
     echo "Máy được phép ngủ (tiết kiệm điện) — khi ngủ sẽ KHÔNG truy cập từ xa được"
     ;;
   *)
-    echo "Cách dùng: webctl on | off | restart | status | keep-awake | sleep-ok"
+    echo "Cách dùng: webctl on | off | restart | status | offload <bộ> | keep-awake | sleep-ok"
     ;;
 esac
