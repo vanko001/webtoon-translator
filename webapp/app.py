@@ -291,9 +291,11 @@ def _evict_cache():
 # ---------------------------------------------------------------- pages
 @app.get("/", response_class=HTMLResponse)
 def library():
+    # Mọi thư mục output có ảnh đều là truyện (raw trong manhwa/ có thể đã xóa
+    # sau khi dịch xong — không được lọc theo manhwa/)
     local = {
         d for d in (os.listdir(OUTPUT) if OUTPUT.is_dir() else [])
-        if (MANHWA / d).is_dir() and list_images(OUTPUT / d)
+        if not d.startswith("model-test-") and list_images(OUTPUT / d)
     }
     names = sorted(local | set(remote_chapters().keys()), key=natural_key)
     series = []
