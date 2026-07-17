@@ -140,6 +140,7 @@ overlap: 200
 glossary_extract_llm: true
 glossary_export_mit: true
 clean_work: true
+delete_raw: true
 """
 
 

@@ -51,6 +51,10 @@ font_size_offset: 0         # Tăng/giảm cỡ chữ render (px)
 tile_height: 6000           # Chiều cao mỗi tile (px) - dưới 10240px an toàn
 overlap: 200                # Overlap giữa tiles (px) - tránh cắt đôi bubble
 
+# Tự xóa thư mục raw sau khi dịch xong TRỌN BỘ + verify từng file output.
+# KHÔNG hoàn tác được — chỉ bật khi coi output là bản lưu chính.
+delete_raw: false
+
 # Glossary settings
 glossary_extract_llm: true    # Dùng LLM extract proper nouns (chất lượng cao)
 glossary_export_mit: true     # Export sang format manga-image-translator

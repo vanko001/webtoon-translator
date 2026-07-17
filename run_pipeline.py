@@ -87,6 +87,9 @@ DEFAULT_CONFIG = {
     # Xóa tiles/translated trong work/ sau khi stitch xong (giữ texts + meta +
     # glossary). Bật khi dịch nhiều bộ liên tiếp để không tràn disk.
     "clean_work": False,
+    # Xóa thư mục ảnh RAW (input_dir) sau khi dịch xong TOÀN BỘ và verify
+    # từng file output. KHÔNG hoàn tác được — chỉ bật khi output là bản lưu chính.
+    "delete_raw": False,
 }
 
 # Few-shot sample dạy văn phong: xưng hô nhất quán + giọng truyền cảm + SFX Việt.
@@ -744,6 +747,24 @@ def main():
     print(f"   Glossary: {len(glossary.entries)} entries")
     print(f"   Output:   {cfg['output_dir']}")
     print(f"{'='*60}")
+
+    # Xóa raw sau khi dịch trọn bộ (không áp dụng khi chạy --chapter lẻ)
+    if (
+        cfg.get("delete_raw")
+        and not args.chapter
+        and files
+        and success_count == len(files)
+    ):
+        verified = all(
+            (out_f := Path(cfg["output_dir"]) / f"{Path(f).stem}{Path(f).suffix}").is_file()
+            and out_f.stat().st_size > 0
+            for f in files
+        )
+        if verified:
+            shutil.rmtree(input_dir)
+            print(f"🗑️  Đã xóa thư mục raw: {input_dir} (output đã verify đủ {len(files)} chương)")
+        else:
+            print("⚠️  KHÔNG xóa raw: có file output thiếu/rỗng dù pipeline báo thành công")
 
 
 if __name__ == "__main__":
