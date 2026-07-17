@@ -1,0 +1,27 @@
+#!/bin/zsh
+# Điều khiển website đọc truyện: webctl on|off|restart|status
+PLIST=~/Library/LaunchAgents/com.vanko.webtoon-web.plist
+LABEL=com.vanko.webtoon-web
+case "$1" in
+  on)
+    launchctl load "$PLIST" 2>/dev/null
+    sleep 3
+    curl -s -o /dev/null -w "Web: HTTP %{http_code}\n" localhost:8765/ || echo "Web chưa lên, đợi vài giây rồi chạy: webctl status"
+    ;;
+  off)
+    launchctl unload "$PLIST" 2>/dev/null && echo "Đã tắt web" || echo "Web vốn đang tắt"
+    ;;
+  restart)
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" && echo "Đã khởi động lại" || echo "Web đang tắt — dùng: webctl on"
+    ;;
+  status)
+    if launchctl list | grep -q "$LABEL"; then
+      curl -s -o /dev/null -w "Web ĐANG BẬT — HTTP %{http_code} — http://100.108.54.9:8765\n" localhost:8765/
+    else
+      echo "Web ĐANG TẮT (webctl on để bật)"
+    fi
+    ;;
+  *)
+    echo "Cách dùng: webctl on | off | restart | status"
+    ;;
+esac
