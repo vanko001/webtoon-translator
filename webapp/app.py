@@ -118,7 +118,7 @@ SETTINGS_FILE = REPO / "webapp" / "settings.json"
 TITLES_FILE = REPO / "titles.json"
 KNOWN_MODELS = ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.5",
                 "kimi-k2.6", "minimax-m3", "gpt-oss"]
-DEFAULT_SETTINGS = {"model": "glm-5.2"}
+DEFAULT_SETTINGS = {"model": "glm-5.2", "auto_offload": True}
 
 
 def load_settings() -> dict:
@@ -283,8 +283,16 @@ class JobManager:
                 d = OUTPUT / series
                 if d.is_dir() and not any(d.iterdir()):
                     d.rmdir()
-            if kind == "translate" and rc == 0 and series not in load_titles():
-                translate_title(series)  # dịch tên truyện sau khi dịch xong bộ
+            if kind == "translate" and rc == 0:
+                if series not in load_titles():
+                    translate_title(series)  # dịch tên truyện sau khi dịch xong bộ
+                # Tự động đẩy output lên Drive rồi xóa local (nếu bật + đã kết nối)
+                if (
+                    load_settings().get("auto_offload")
+                    and rclone_ready()
+                    and list_images(OUTPUT / series)
+                ):
+                    self.enqueue(series, kind="offload")
             with self.lock:
                 self.history.insert(0, {
                     "series": label, "exit": rc,
@@ -479,8 +487,10 @@ def api_settings_set(payload: dict):
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,60}", model):
         raise HTTPException(400, "Tên model không hợp lệ")
     s["model"] = model
+    if "auto_offload" in payload:
+        s["auto_offload"] = bool(payload["auto_offload"])
     save_settings(s)
-    return {"result": f"Model dịch: {model}"}
+    return {"result": f"Đã lưu (model: {model}, tự đẩy Drive: {'bật' if s['auto_offload'] else 'tắt'})"}
 
 
 @app.post("/api/title/{series}")

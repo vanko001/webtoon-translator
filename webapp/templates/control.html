@@ -7,6 +7,8 @@
   ⚙️ Model dịch:
   <input id="model" list="models" style="background:#0a0c10;color:#e6e6e6;border:1px solid #232838;border-radius:6px;padding:5px 8px;width:220px">
   <datalist id="models"></datalist>
+  &nbsp; <label style="font-size:14px"><input type="checkbox" id="autoOffload">
+  Dịch xong tự đẩy Drive → xóa local</label>
   <button onclick="saveSettings()">Lưu</button>
   <span id="settingsMsg" style="color:#8a93a6;font-size:13px"></span>
 </div>
@@ -50,13 +52,15 @@ async function refresh() {
 async function loadSettings() {
   const d = await (await fetch('/api/settings')).json();
   document.getElementById('model').value = d.model;
+  document.getElementById('autoOffload').checked = !!d.auto_offload;
   document.getElementById('models').innerHTML =
     d.known_models.map(m => `<option value="${m}">`).join('');
 }
 async function saveSettings() {
   const model = document.getElementById('model').value.trim();
+  const auto_offload = document.getElementById('autoOffload').checked;
   const r = await fetch('/api/settings', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({model})});
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({model, auto_offload})});
   const d = await r.json().catch(()=>({}));
   document.getElementById('settingsMsg').textContent = r.ok ? d.result : (d.detail||'Lỗi');
 }
