@@ -132,6 +132,49 @@ def fetch_remote_file(remote_path: str, dst: Path) -> None:
         raise HTTPException(502, f"Tải từ Drive lỗi: {r.stderr[-200:]}")
 
 
+# Khóa theo từng chương để không tải trùng khi nhiều request tới cùng lúc
+_prefetch_locks: dict[str, threading.Lock] = {}
+_prefetch_locks_guard = threading.Lock()
+
+
+def _chapter_lock(key: str) -> threading.Lock:
+    with _prefetch_locks_guard:
+        return _prefetch_locks.setdefault(key, threading.Lock())
+
+
+def prefetch_chapter_dir(series: str, stem: str) -> None:
+    """Tải CẢ thư mục lát của 1 chương từ Drive về cache trong 1 lệnh rclone
+    (song song 16 file) thay vì mỗi lát 1 tiến trình. Idempotent (có .done)."""
+    cdir = CACHE / series / stem
+    if (cdir / ".done").exists():
+        os.utime(cdir)
+        return
+    with _chapter_lock(f"{series}/{stem}"):
+        if (cdir / ".done").exists():
+            return
+        cdir.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(
+            [RCLONE, "copy", f"{REMOTE}/{series}/{stem}", str(cdir),
+             "--transfers", "16", "--checkers", "16"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if r.returncode != 0:
+            raise HTTPException(502, f"Tải chương từ Drive lỗi: {r.stderr[-200:]}")
+        (cdir / ".done").touch()
+        _evict_cache()
+
+
+def prefetch_async(series: str, stem: str | None) -> None:
+    """Tải trước 1 chương trong nền (không chặn) — dùng cho chương kế tiếp."""
+    if not stem:
+        return
+    rem = remote_chapters().get(series, {}).get(stem)
+    if rem and rem["type"] == "dir" and not (CACHE / series / stem / ".done").exists():
+        threading.Thread(
+            target=lambda: prefetch_chapter_dir(series, stem), daemon=True
+        ).start()
+
+
 def ensure_original(series: str, stem: str) -> tuple[Path, bool]:
     """Ảnh gốc 1-file của chương (chỉ dùng cho chương layout cũ).
 
@@ -368,6 +411,8 @@ def chapter_slices(series: str, stem: str) -> list[str]:
 
     rem = remote_chapters().get(series, {}).get(stem)
     if rem and rem["type"] == "dir":
+        # Tải cả chương về cache 1 lần (song song) → mọi lát sau đó tức thì
+        prefetch_chapter_dir(series, stem)
         return rem["slices"]
 
     # Layout cũ: 1 file ảnh dài → cắt vào cache
@@ -399,8 +444,11 @@ def get_slice_path(series: str, stem: str, name: str) -> Path:
         return cached
     rem = remote_chapters().get(series, {}).get(stem)
     if rem and rem["type"] == "dir" and name in rem["slices"]:
+        # Tải cả chương 1 lần (không phải từng lát) → lát này + các lát sau đều có
+        prefetch_chapter_dir(series, stem)
+        if cached.is_file():
+            return cached
         fetch_remote_file(f"{series}/{stem}/{name}", cached)
-        _evict_cache()
         return cached
     # Layout cũ chưa cắt → cắt cả chương rồi thử lại
     chapter_slices(series, stem)
@@ -470,6 +518,7 @@ def reader(series: str, stem: str):
     i = stems.index(stem)
     prev_ch = stems[i - 1] if i > 0 else None
     next_ch = stems[i + 1] if i + 1 < len(stems) else None
+    prefetch_async(series, next_ch)  # tải trước chương kế tiếp trong nền
     return jinja.get_template("reader.html").render(
         series=series, title=display_name(series), stem=stem,
         slices=slices, prev=prev_ch, next=next_ch,
