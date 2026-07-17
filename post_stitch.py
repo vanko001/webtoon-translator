@@ -43,13 +43,40 @@ def find_translated_tile(translated_dir: str, tile_basename: str) -> str | None:
     return os.path.join(translated_dir, candidates[0])
 
 
-def stitch_chapter(meta_path: str, translated_dir: str, out_path: str) -> bool:
-    """Ghép các tile đã dịch thành 1 ảnh dài.
+SLICE_HEIGHT = 2400
+SLICE_QUALITY = 85
+
+
+def save_output(result: Image.Image, out_path: str, sliced: bool) -> None:
+    """Lưu ảnh chương đã ghép.
+
+    sliced=True: out_path là THƯ MỤC, ảnh cắt thành lát ~2400px JPEG q85
+    (nhẹ hơn 60-85% so với 1 file, không đụng giới hạn JPEG 65500px,
+    web đọc từng lát nhanh). sliced=False: 1 file như cũ.
+    """
+    if not sliced:
+        result.save(out_path, quality=95)
+        return
+    os.makedirs(out_path, exist_ok=True)
+    w, h = result.size
+    for i, y in enumerate(range(0, h, SLICE_HEIGHT)):
+        piece = result.crop((0, y, w, min(y + SLICE_HEIGHT, h)))
+        piece.save(
+            os.path.join(out_path, f"{i:03d}.jpg"),
+            quality=SLICE_QUALITY, progressive=True, optimize=True,
+        )
+
+
+def stitch_chapter(
+    meta_path: str, translated_dir: str, out_path: str, sliced: bool = False
+) -> bool:
+    """Ghép các tile đã dịch thành 1 chương hoàn chỉnh.
 
     Args:
         meta_path: Đường dẫn meta.json (do pre_split tạo).
         translated_dir: Thư mục chứa tiles đã dịch.
-        out_path: Đường dẫn output ảnh hoàn chỉnh.
+        out_path: File ảnh (sliced=False) hoặc thư mục lát (sliced=True).
+        sliced: Lưu dạng thư mục lát JPEG thay vì 1 file.
 
     Returns:
         True nếu thành công.
@@ -69,7 +96,7 @@ def stitch_chapter(meta_path: str, translated_dir: str, out_path: str) -> bool:
         # Resize về kích thước gốc nếu cần
         if img.size != (orig_w, orig_h):
             img = img.resize((orig_w, orig_h), Image.LANCZOS)
-        img.save(out_path, quality=95)
+        save_output(img, out_path, sliced)
         print(f"  [stitch] 1 tile -> {out_path}")
         return True
 
@@ -103,7 +130,7 @@ def stitch_chapter(meta_path: str, translated_dir: str, out_path: str) -> bool:
         cropped = tile_img.crop((0, crop_top, orig_w, crop_bottom))
         result.paste(cropped, (0, y_start + crop_top))
 
-    result.save(out_path, quality=95)
+    save_output(result, out_path, sliced)
     print(f"  [stitch] {len(tiles)} tiles -> {out_path}")
     return True
 

@@ -90,7 +90,28 @@ DEFAULT_CONFIG = {
     # Xóa thư mục ảnh RAW (input_dir) sau khi dịch xong TOÀN BỘ và verify
     # từng file output. KHÔNG hoàn tác được — chỉ bật khi output là bản lưu chính.
     "delete_raw": False,
+    # "slices" = mỗi chương là THƯ MỤC lát JPEG ~2400px (nhẹ hơn 60-85%,
+    # web đọc nhanh, không đụng giới hạn JPEG 65500px). "single" = 1 file như cũ.
+    "output_format": "slices",
 }
+
+
+def chapter_out_path(cfg: dict, chapter_file: str) -> str:
+    """Đường output của 1 chương theo output_format."""
+    stem = Path(chapter_file).stem
+    if cfg.get("output_format", "slices") == "slices":
+        return os.path.join(cfg["output_dir"], stem)
+    return os.path.join(cfg["output_dir"], f"{stem}{Path(chapter_file).suffix}")
+
+
+def chapter_output_ok(cfg: dict, chapter_file: str) -> bool:
+    """Verify output của 1 chương tồn tại thật (file khác rỗng / thư mục có lát)."""
+    p = Path(chapter_out_path(cfg, chapter_file))
+    if cfg.get("output_format", "slices") == "slices":
+        return p.is_dir() and any(
+            f.suffix == ".jpg" and f.stat().st_size > 0 for f in p.iterdir()
+        )
+    return p.is_file() and p.stat().st_size > 0
 
 # Few-shot sample dạy văn phong: xưng hô nhất quán + giọng truyền cảm + SFX Việt.
 # Engine tiêm cặp này làm ví dụ user/assistant trước khi dịch thật.
@@ -412,9 +433,10 @@ def process_chapter(
             print(f"  [glossary] Skip extract (lỗi: {e})")
 
     # 5. Post-stitch
-    out_path = os.path.join(cfg["output_dir"], f"{stem}{Path(chapter_file).suffix}")
+    out_path = chapter_out_path(cfg, chapter_file)
     os.makedirs(cfg["output_dir"], exist_ok=True)
-    if not stitch_chapter(meta_path, translated_dir, out_path):
+    sliced = cfg.get("output_format", "slices") == "slices"
+    if not stitch_chapter(meta_path, translated_dir, out_path, sliced=sliced):
         print(f"  [fail] Stitch thất bại: {stem}")
         return False
 
@@ -509,7 +531,8 @@ def process_series(
     proc = subprocess.Popen(cmd, env=env)
 
     order = [Path(f).stem for f in pending]
-    suffix_of = {Path(f).stem: Path(f).suffix for f in pending}
+    file_of = {Path(f).stem: f for f in pending}
+    sliced = cfg.get("output_format", "slices") == "slices"
     stitched: set[str] = set()
 
     def tile_done(tile_stem: str, names: list[str]) -> bool:
@@ -532,8 +555,8 @@ def process_series(
                     continue
                 if not tile_done(chapter_tile_stems[order[i + 1]][0], names):
                     continue
-            out_path = os.path.join(cfg["output_dir"], f"{stem}{suffix_of[stem]}")
-            if stitch_chapter(metas[stem], translated_dir, out_path):
+            out_path = chapter_out_path(cfg, file_of[stem])
+            if stitch_chapter(metas[stem], translated_dir, out_path, sliced=sliced):
                 stitched.add(stem)
                 if stem not in progress["completed"]:
                     progress["completed"].append(stem)
@@ -755,11 +778,7 @@ def main():
         and files
         and success_count == len(files)
     ):
-        verified = all(
-            (out_f := Path(cfg["output_dir"]) / f"{Path(f).stem}{Path(f).suffix}").is_file()
-            and out_f.stat().st_size > 0
-            for f in files
-        )
+        verified = all(chapter_output_ok(cfg, f) for f in files)
         if verified:
             shutil.rmtree(input_dir)
             print(f"🗑️  Đã xóa thư mục raw: {input_dir} (output đã verify đủ {len(files)} chương)")

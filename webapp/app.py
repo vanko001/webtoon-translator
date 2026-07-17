@@ -59,11 +59,15 @@ def rclone_ready() -> bool:
 _remote_cache: dict = {"t": 0.0, "data": {}}
 
 
-def remote_chapters() -> dict[str, list[str]]:
-    """Danh sách chương trên Drive theo series (cache 5 phút)."""
+def remote_chapters() -> dict[str, dict]:
+    """Cấu trúc chương trên Drive (cache 5 phút).
+
+    {series: {stem: {"type": "dir", "slices": [...]} | {"type": "file", "file": tên}}}
+    Hỗ trợ cả 2 layout: series/stem/NNN.jpg (lát) và series/chương.jpg (file cũ).
+    """
     if time.time() - _remote_cache["t"] < 300:
         return _remote_cache["data"]
-    data: dict[str, list[str]] = {}
+    data: dict[str, dict] = {}
     if rclone_ready():
         try:
             out = subprocess.run(
@@ -72,41 +76,76 @@ def remote_chapters() -> dict[str, list[str]]:
             )
             if out.returncode == 0:
                 for e in json.loads(out.stdout):
-                    p = e.get("Path", "")
-                    if "/" in p:
-                        s, f = p.split("/", 1)
-                        if "/" not in f and Path(f).suffix.lower() in IMG_EXTS:
-                            data.setdefault(s, []).append(f)
+                    parts = Path(e.get("Path", "")).parts
+                    if len(parts) == 2 and Path(parts[1]).suffix.lower() in IMG_EXTS:
+                        s, f = parts
+                        data.setdefault(s, {})[Path(f).stem] = {"type": "file", "file": f}
+                    elif len(parts) == 3 and parts[2].endswith(".jpg"):
+                        s, stem, f = parts
+                        entry = data.setdefault(s, {}).setdefault(
+                            stem, {"type": "dir", "slices": []}
+                        )
+                        if entry["type"] == "dir":
+                            entry["slices"].append(f)
                 for s in data:
-                    data[s].sort(key=natural_key)
+                    for st in data[s].values():
+                        if st["type"] == "dir":
+                            st["slices"].sort(key=natural_key)
         except Exception:
             data = _remote_cache["data"]
     _remote_cache.update(t=time.time(), data=data)
     return _remote_cache["data"]
 
 
-def merged_chapters(series: str) -> list[str]:
-    """Chương của 1 bộ: local ∪ Drive."""
-    merged = set(list_images(OUTPUT / series)) | set(remote_chapters().get(series, []))
+def local_chapter_map(series: str) -> dict[str, dict]:
+    """Chương local: {stem: {"type": "dir"|"file", ...}}."""
+    d = OUTPUT / series
+    out: dict[str, dict] = {}
+    if not d.is_dir():
+        return out
+    for entry in d.iterdir():
+        if entry.is_dir():
+            slices = sorted(
+                (f.name for f in entry.iterdir() if f.suffix == ".jpg"),
+                key=natural_key,
+            )
+            if slices:
+                out[entry.name] = {"type": "dir", "slices": slices, "path": entry}
+        elif entry.suffix.lower() in IMG_EXTS:
+            out[entry.stem] = {"type": "file", "file": entry.name, "path": entry}
+    return out
+
+
+def merged_stems(series: str) -> list[str]:
+    """Danh sách stem chương của 1 bộ: local ∪ Drive."""
+    merged = set(local_chapter_map(series)) | set(remote_chapters().get(series, {}))
     return sorted(merged, key=natural_key)
 
 
-def ensure_original(series: str, chapter: str) -> tuple[Path, bool]:
-    """Trả về (đường dẫn ảnh gốc, có phải file tạm tải từ Drive không)."""
-    local = OUTPUT / series / chapter
-    if local.is_file():
-        return local, False
-    if chapter not in remote_chapters().get(series, []):
-        raise HTTPException(404, "Không có chương này (cả local lẫn Drive)")
-    tmp = CACHE / "_dl" / series / chapter
-    tmp.parent.mkdir(parents=True, exist_ok=True)
+def fetch_remote_file(remote_path: str, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run(
-        [RCLONE, "copyto", f"{REMOTE}/{series}/{chapter}", str(tmp)],
+        [RCLONE, "copyto", f"{REMOTE}/{remote_path}", str(dst)],
         capture_output=True, text=True, timeout=300,
     )
-    if r.returncode != 0 or not tmp.is_file():
+    if r.returncode != 0 or not dst.is_file():
         raise HTTPException(502, f"Tải từ Drive lỗi: {r.stderr[-200:]}")
-    return tmp, True
+
+
+def ensure_original(series: str, stem: str) -> tuple[Path, bool]:
+    """Ảnh gốc 1-file của chương (chỉ dùng cho chương layout cũ).
+
+    Returns: (path, is_tmp_from_drive)
+    """
+    loc = local_chapter_map(series).get(stem)
+    if loc and loc["type"] == "file":
+        return loc["path"], False
+    rem = remote_chapters().get(series, {}).get(stem)
+    if rem and rem["type"] == "file":
+        tmp = CACHE / "_dl" / series / rem["file"]
+        fetch_remote_file(f"{series}/{rem['file']}", tmp)
+        return tmp, True
+    raise HTTPException(404, "Không có chương này")
 
 load_dotenv(REPO / ".env")
 
@@ -290,7 +329,7 @@ class JobManager:
                 if (
                     load_settings().get("auto_offload")
                     and rclone_ready()
-                    and list_images(OUTPUT / series)
+                    and local_chapter_map(series)
                 ):
                     self.enqueue(series, kind="offload")
             with self.lock:
@@ -308,19 +347,31 @@ jobs = JobManager()
 
 
 # ---------------------------------------------------------------- slicing
-def chapter_slices(series: str, chapter: str) -> list[str]:
-    """Trả về danh sách file lát của 1 chương, cắt nếu chưa có trong cache.
+def chapter_slices(series: str, stem: str) -> list[str]:
+    """Danh sách lát của 1 chương, theo thứ tự ưu tiên nguồn:
 
-    Ảnh gốc lấy từ local, không có thì tự tải từ Drive (xóa file tạm sau khi cắt).
+    1. Thư mục lát local (storage mới) — serve thẳng, không cần cache
+    2. Cache đã cắt sẵn
+    3. Thư mục lát trên Drive — trả tên lát, /img tải lười từng lát khi xem
+    4. File 1-ảnh (local hoặc Drive, layout cũ) — cắt vào cache
     """
-    cdir = CACHE / series / Path(chapter).stem
-    done_marker = cdir / ".done"
-    if done_marker.exists():
+    loc = local_chapter_map(series).get(stem)
+    if loc and loc["type"] == "dir":
+        return loc["slices"]
+
+    cdir = CACHE / series / stem
+    if (cdir / ".done").exists():
         os.utime(cdir)  # đánh dấu mới dùng (cho LRU)
         return sorted(
             (f for f in os.listdir(cdir) if f.endswith(".jpg")), key=natural_key
         )
-    src, is_tmp = ensure_original(series, chapter)
+
+    rem = remote_chapters().get(series, {}).get(stem)
+    if rem and rem["type"] == "dir":
+        return rem["slices"]
+
+    # Layout cũ: 1 file ảnh dài → cắt vào cache
+    src, is_tmp = ensure_original(series, stem)
     cdir.mkdir(parents=True, exist_ok=True)
     img = Image.open(src).convert("RGB")
     w, h = img.size
@@ -330,12 +381,32 @@ def chapter_slices(series: str, chapter: str) -> list[str]:
         name = f"{i:03d}.jpg"
         piece.save(cdir / name, quality=SLICE_QUALITY, progressive=True)
         names.append(name)
-    done_marker.touch()
+    (cdir / ".done").touch()
     if is_tmp:
         img.close()
         src.unlink(missing_ok=True)
     _evict_cache()
     return names
+
+
+def get_slice_path(series: str, stem: str, name: str) -> Path:
+    """Đường dẫn thật của 1 lát, tải lười từ Drive vào cache nếu cần."""
+    storage = OUTPUT / series / stem / name
+    if storage.is_file():
+        return storage
+    cached = CACHE / series / stem / name
+    if cached.is_file():
+        return cached
+    rem = remote_chapters().get(series, {}).get(stem)
+    if rem and rem["type"] == "dir" and name in rem["slices"]:
+        fetch_remote_file(f"{series}/{stem}/{name}", cached)
+        _evict_cache()
+        return cached
+    # Layout cũ chưa cắt → cắt cả chương rồi thử lại
+    chapter_slices(series, stem)
+    if cached.is_file():
+        return cached
+    raise HTTPException(404)
 
 
 def _evict_cache():
@@ -362,29 +433,29 @@ def _evict_cache():
 # ---------------------------------------------------------------- pages
 @app.get("/", response_class=HTMLResponse)
 def library():
-    # Mọi thư mục output có ảnh đều là truyện (raw trong manhwa/ có thể đã xóa
-    # sau khi dịch xong — không được lọc theo manhwa/)
+    # Mọi thư mục output có nội dung đều là truyện (raw trong manhwa/ có thể
+    # đã xóa sau khi dịch xong — không được lọc theo manhwa/)
     local = {
         d for d in (os.listdir(OUTPUT) if OUTPUT.is_dir() else [])
-        if not d.startswith("model-test-") and list_images(OUTPUT / d)
+        if not d.startswith("model-test-") and local_chapter_map(d)
     }
     names = sorted(local | set(remote_chapters().keys()), key=natural_key)
     titles = load_titles()
     series = []
     for name in names:
-        chapters = merged_chapters(name)
-        if chapters:
+        stems = merged_stems(name)
+        if stems:
             series.append({"name": name, "title": titles.get(name, name),
-                           "n": len(chapters), "first": Path(chapters[0]).stem})
+                           "n": len(stems), "first": stems[0]})
     return jinja.get_template("library.html").render(series=series)
 
 
 @app.get("/doc/{series}", response_class=HTMLResponse)
 def series_page(series: str):
-    chapters = merged_chapters(series)
-    if not chapters:
+    stems = merged_stems(series)
+    if not stems:
         raise HTTPException(404)
-    chs = [{"file": c, "stem": Path(c).stem} for c in chapters]
+    chs = [{"stem": s} for s in stems]
     return jinja.get_template("series.html").render(
         series=series, title=display_name(series), chapters=chs
     )
@@ -392,12 +463,10 @@ def series_page(series: str):
 
 @app.get("/doc/{series}/{stem}", response_class=HTMLResponse)
 def reader(series: str, stem: str):
-    chapters = merged_chapters(series)
-    stems = [Path(c).stem for c in chapters]
+    stems = merged_stems(series)
     if stem not in stems:
         raise HTTPException(404)
-    chapter = chapters[stems.index(stem)]
-    slices = chapter_slices(series, chapter)
+    slices = chapter_slices(series, stem)
     i = stems.index(stem)
     prev_ch = stems[i - 1] if i > 0 else None
     next_ch = stems[i + 1] if i + 1 < len(stems) else None
@@ -412,27 +481,27 @@ def cover(series: str):
     """Thumbnail bìa: phần đầu chương 1, rộng 480px."""
     p = CACHE / series / "_cover.jpg"
     if not p.is_file():
-        chapters = merged_chapters(series)
-        if not chapters:
+        stems = merged_stems(series)
+        if not stems:
             raise HTTPException(404)
-        src, is_tmp = ensure_original(series, chapters[0])
+        slices = chapter_slices(series, stems[0])
+        if not slices:
+            raise HTTPException(404)
+        src = get_slice_path(series, stems[0], slices[0])
         img = Image.open(src).convert("RGB")
         w, h = img.size
         img = img.crop((0, 0, w, min(h, int(w * 4 / 3))))
         img.thumbnail((480, 640))
         p.parent.mkdir(parents=True, exist_ok=True)
         img.save(p, quality=80)
-        if is_tmp:
-            src.unlink(missing_ok=True)
     return FileResponse(p, media_type="image/jpeg")
 
 
 @app.get("/img/{series}/{stem}/{name}")
 def slice_img(series: str, stem: str, name: str):
-    p = CACHE / series / stem / name
-    if not re.fullmatch(r"\d{3}\.jpg", name) or not p.is_file():
+    if not re.fullmatch(r"\d{3}\.jpg", name):
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return FileResponse(get_slice_path(series, stem, name), media_type="image/jpeg")
 
 
 @app.get("/control", response_class=HTMLResponse)
@@ -450,8 +519,8 @@ def api_status():
         if not d.is_dir():
             continue
         n_in = len(list_images(d))
-        n_local = len(list_images(OUTPUT / name))
-        n_drive = len(remote_chapters().get(name, []))
+        n_local = len(local_chapter_map(name))
+        n_drive = len(remote_chapters().get(name, {}))
         n_out = max(n_local, n_drive)
         if jobs.current == f"translate:{name}":
             state = "đang dịch"
@@ -506,8 +575,8 @@ def api_offload(series: str):
     """Đẩy ảnh gốc của 1 bộ lên Drive (verify checksum xong mới xóa local)."""
     if not rclone_ready():
         raise HTTPException(400, "Chưa kết nối Google Drive — chạy: rclone config create gdrive drive")
-    if not list_images(OUTPUT / series):
-        raise HTTPException(404, "Bộ này không có ảnh local để đẩy")
+    if not local_chapter_map(series):
+        raise HTTPException(404, "Bộ này không có nội dung local để đẩy")
     return {"result": jobs.enqueue(series, kind="offload")}
 
 
