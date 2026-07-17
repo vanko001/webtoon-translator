@@ -1,0 +1,18 @@
+# Config smoke-test: chạy full pipeline KHÔNG cần API key
+# (translator "original" giữ nguyên text — chỉ test detect/OCR/inpaint/render/stitch)
+input_dir: "test_e2e/input"
+output_dir: "test_e2e/output"
+work_dir: "test_e2e/work"
+fonts_dir: "fonts"
+glossary_file: "test_e2e/glossary.json"
+progress_file: "test_e2e/work/progress.json"
+
+translator: "original"
+series_mode: true
+target_lang: "VIN"
+context_size: 0
+batch_size: 1
+use_gpu: true
+attempts: 1
+glossary_extract_llm: false
+glossary_export_mit: false

@@ -3,6 +3,7 @@
 
 # Image processing
 Pillow>=10.0.0
+numpy>=1.24
 
 # Config
 PyYAML>=6.0
@@ -10,11 +11,8 @@ PyYAML>=6.0
 # OpenAI client (cho Ollama Cloud + glossary LLM extract)
 openai>=1.0.0
 
-# manga-image-translator (engine chính)
-# Cài riêng vì có nhiều dependency GPU/OCR:
-#   pip install manga-image-translator
-# Hoặc clone repo:
-#   git clone https://github.com/zyddnys/manga-image-translator
-#   cd manga-image-translator && pip install -r requirements.txt
-#   pip install -e .
-manga-image-translator>=0.0.1
+# LƯU Ý: manga-image-translator (engine chính) KHÔNG có trên PyPI.
+# Phải cài từ source (xem README):
+#   git clone --depth 1 https://github.com/zyddnys/manga-image-translator ../manga-image-translator
+#   pip install -r ../manga-image-translator/requirements.txt
+#   pip install -e ../manga-image-translator

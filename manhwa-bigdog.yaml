@@ -1,0 +1,36 @@
+# Config dịch bộ big-dog (10 chương) — glm-5.2, context xuyên chương
+input_dir: "/Users/ledoanvu/Desktop/crawl/manhwa/big-dog"
+output_dir: "output/big-dog"
+work_dir: "work/big-dog"
+fonts_dir: "fonts"
+glossary_file: "glossary-big-dog.json"
+progress_file: "work/big-dog/progress.json"
+
+ollama_base_url: "https://ollama.com/v1"
+ollama_model: "glm-5.2"
+
+translator: "chatgpt"
+series_mode: true         # dịch cả 10 chương trong 1 lần chạy → context xuyên chương
+target_lang: "VIN"
+context_size: 10          # 10 tile trước làm context (~3 chương lookback, glm-5.2 1M chịu tốt)
+batch_size: 3
+
+# Văn phong 18+ trau chuốt (chỉnh sửa file prompt tự do, không cần sửa code)
+system_prompt_file: "prompts/vietnamese-adult.txt"
+gpt_temperature: 0.55     # cân bằng: văn bay nhưng ít lỗi chính tả
+use_gpu: true
+attempts: 3
+
+# Tối ưu tốc độ (mục tiêu ≤2 phút/chương)
+inpainter: "lama_mpe"       # nhanh hơn lama_large ~20-30%; đổi lại "lama_large" nếu cần inpaint đẹp nhất
+inpainting_size: 1536       # giảm từ 2048 → nhanh hơn, bubble trắng gần như không khác
+
+glossary_extract_llm: true
+glossary_export_mit: true
+
+tile_height: 8500
+overlap: 200
+
+character_sheet: true
+
+clean_work: true

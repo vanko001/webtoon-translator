@@ -22,10 +22,17 @@ env/
 *~
 
 # Pipeline working data (không commit)
-work/tiles/
-work/translated/
-work/progress.json
-work/glossary_mit.txt
+work/*
+!work/.gitkeep
+
+# Smoke-test artifacts (giữ lại input + config)
+test_e2e/work/
+test_e2e/output/
+test_e2e/glossary.json
+
+# Dữ liệu per-series (glossary + hồ sơ nhân vật + báo cáo chạy)
+glossary-*.json
+BAO-CAO-DEM.md
 
 # Input/Output (không commit ảnh)
 input/*

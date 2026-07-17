@@ -6,9 +6,15 @@ Module này cắt ảnh dài thành tiles ~6000px với overlap 200px để khô
 
 import json
 import os
+import re
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
+
+# Webtoon strip rất dài có thể vượt giới hạn decompression-bomb mặc định của Pillow.
+# Input là ảnh của chính người dùng nên tắt giới hạn này.
+Image.MAX_IMAGE_PIXELS = None
 
 # Kích thước tile mặc định (px). Dưới 10240px là an toàn với manga-image-translator.
 DEFAULT_TILE_HEIGHT = 6000
@@ -16,6 +22,72 @@ DEFAULT_TILE_HEIGHT = 6000
 DEFAULT_OVERLAP = 200
 # Định dạng ảnh output.
 SUPPORTED_INPUT_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def natural_key(name: str):
+    """Sort key tự nhiên: ch2 < ch10 (thay vì sort chữ cái ch10 < ch2)."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", name)]
+
+
+# Cửa sổ tìm kiếm đường cắt "yên tĩnh" quanh vị trí cắt lý tưởng (px).
+CUT_SEARCH_WINDOW = 800
+# Nửa chiều cao dải ngang dùng để chấm điểm độ yên tĩnh quanh 1 đường cắt (px).
+CUT_BAND = 40
+
+
+def find_quiet_cuts(
+    img: Image.Image,
+    tile_height: int,
+    overlap: int,
+    window: int = CUT_SEARCH_WINDOW,
+    band: int = CUT_BAND,
+) -> list[int]:
+    """Chọn các vị trí cắt sao cho đường cắt rơi vào vùng "yên tĩnh" của ảnh.
+
+    Nếu cắt cứng tại bội số tile_height, đường cắt có thể xuyên qua text bubble:
+    2 tile kề nhau cùng chứa bubble đó và render 2 bản dịch xuống dòng khác nhau
+    → ghép lại bị chữ chồng chữ tại seam. Webtoon có rất nhiều khoảng trống giữa
+    các panel, nên quanh mỗi vị trí cắt lý tưởng ta quét ±window px, chấm điểm
+    từng dải ngang (độ lệch chuẩn pixel = mức chi tiết) và cắt tại dải phẳng nhất.
+
+    Returns:
+        Danh sách vị trí cắt (không gồm 0 và height), tăng dần.
+    """
+    width, height = img.size
+    if height <= tile_height:
+        return []
+
+    # Grayscale, downsample chiều ngang cho nhanh (chi tiết dọc giữ nguyên)
+    gray = np.asarray(img.convert("L").resize((min(width, 256), height)), dtype=np.float32)
+
+    # Điểm "ồn" từng hàng: độ lệch chuẩn ngang (text/nét vẽ = cao, nền phẳng = ~0)
+    row_std = gray.std(axis=1)
+    row_mean = gray.mean(axis=1)
+
+    def band_score(y: int) -> float:
+        lo, hi = max(0, y - band), min(height, y + band)
+        # Dải yên tĩnh = các hàng đều phẳng VÀ giống nhau (không nằm giữa 2 mảng màu)
+        return float(row_std[lo:hi].mean() + row_mean[lo:hi].std())
+
+    cuts: list[int] = []
+    prev = 0
+    step = tile_height - overlap
+    while height - prev > tile_height:
+        target = prev + step
+        lo = max(prev + tile_height // 2, target - window)
+        hi = min(height - overlap, target + window)
+        if lo >= hi:
+            cut = target
+        else:
+            candidates = np.arange(lo, hi, 4)
+            scores = [band_score(int(y)) for y in candidates]
+            cut = int(candidates[int(np.argmin(scores))])
+        # Nếu phần còn lại quá ngắn thì thôi, gộp vào tile cuối
+        if height - cut < overlap * 2:
+            break
+        cuts.append(cut)
+        prev = cut
+    return cuts
 
 
 def split_image(
@@ -41,7 +113,7 @@ def split_image(
 
     # Ảnh đủ ngắn → không cần cắt, copy thẳng
     if height <= tile_height:
-        tile_path = os.path.join(out_dir, f"{stem}_tile_001.png")
+        tile_path = os.path.join(out_dir, f"{stem}_tile_000.png")
         img.save(tile_path)
         return {
             "original": image_path,
@@ -60,33 +132,32 @@ def split_image(
             ],
         }
 
-    # Cắt thành tiles có overlap
+    # Chọn đường cắt tại vùng "yên tĩnh" (tránh cắt qua text bubble),
+    # rồi nới mỗi tile nửa overlap về 2 phía quanh đường cắt.
+    # → seam khi stitch (giữa vùng overlap) rơi đúng đường cắt yên tĩnh.
+    cuts = find_quiet_cuts(img, tile_height, overlap)
+    half = overlap // 2
+    starts = [0] + [c - half for c in cuts]
+    ends = [c + half for c in cuts] + [height]
+
     tiles = []
-    step = tile_height - overlap  # khoảng cách giữa 2 tile liên tiếp
-    y = 0
-    index = 0
-    while y < height:
-        y_end = min(y + tile_height, height)
+    last = len(starts) - 1
+    for index, (y, y_end) in enumerate(zip(starts, ends)):
         tile = img.crop((0, y, width, y_end))
         tile_path = os.path.join(out_dir, f"{stem}_tile_{index:03d}.png")
         tile.save(tile_path)
 
         # Overlap trên/dưới để post_stitch biết vùng nào cần cắt bỏ
-        overlap_top = overlap if index > 0 else 0
-        overlap_bottom = overlap if y_end < height else 0
-
         tiles.append(
             {
                 "file": tile_path,
                 "index": index,
                 "y_start": y,
                 "y_end": y_end,
-                "overlap_top": overlap_top,
-                "overlap_bottom": overlap_bottom,
+                "overlap_top": 2 * half if index > 0 else 0,
+                "overlap_bottom": 2 * half if index < last else 0,
             }
         )
-        index += 1
-        y += step
 
     return {
         "original": image_path,
@@ -119,7 +190,8 @@ def split_chapter(
     os.makedirs(tiles_dir, exist_ok=True)
 
     meta = split_image(chapter_path, tiles_dir, tile_height, overlap)
-    meta_path = os.path.join(tiles_dir, "meta.json")
+    # meta.json để NGOÀI tiles_dir, tránh engine coi nó là file cần dịch
+    meta_path = os.path.join(out_dir, f"{stem}.meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
@@ -149,9 +221,12 @@ def split_all(
 
     # Sort natural order để chương 2 không nằm sau chương 10
     files = sorted(
-        f
-        for f in os.listdir(input_dir)
-        if Path(f).suffix.lower() in SUPPORTED_INPUT_EXTS
+        (
+            f
+            for f in os.listdir(input_dir)
+            if Path(f).suffix.lower() in SUPPORTED_INPUT_EXTS
+        ),
+        key=natural_key,
     )
     if not files:
         print(f"[split] Không tìm thấy ảnh trong {input_dir}")

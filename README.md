@@ -25,22 +25,24 @@ Pipeline tự động dịch **webtoon / manhwa (Korean → Vietnamese)**, giữ
 | Tính năng | Mô tả |
 |-----------|-------|
 | **End-to-end** | Bỏ ảnh raw vào `input/` → chạy 1 lệnh → nhận ảnh đã dịch trong `output/` |
-| **Giữ context xuyên chương** | Truyền 3 tile trước làm context khi dịch (`--context-size 3`) → AI hiểu mạch truyện |
-| **Glossary tích lũy** | Tự extract tên nhân vật/địa danh, tích lũy xuyên suốt 200 chương → dịch consistent toàn series |
-| **Xử lý ảnh dài** | Tự cắt webtoon strip dài >8000px thành tiles, dịch xong ghép lại |
+| **Giữ context xuyên chương** | `series_mode: true` dịch cả bộ trong 1 lần chạy engine + `context_size` tile trước làm context → AI hiểu mạch truyện xuyên suốt series |
+| **Glossary tích lũy** | Tự extract tên nhân vật/địa danh, tích lũy xuyên suốt series → dịch consistent |
+| **Xử lý ảnh dài** | Tự cắt webtoon strip dài thành tiles, dịch xong ghép lại **chính xác từng pixel** |
+| **Cắt thông minh** | Đường cắt tự né text bubble (tìm vùng trống giữa panel) → không bao giờ chữ chồng chữ tại seam |
 | **Resume được** | Checkpoint `progress.json`, crash không mất công |
 | **Ollama Cloud** | Dịch qua `qwen3.5` / `deepseek-v4-pro` trên Ollama Cloud (không cần GPU local) |
-| **Apple Silicon** | Tận dụng MPS acceleration trên Mac M1-M4 |
+| **Apple Silicon** | Tận dụng MPS acceleration trên Mac M1-M4 (tự bật fallback CPU cho op chưa hỗ trợ) |
+| **Smoke-test không cần API key** | `translator: "original"` chạy full pipeline ảnh để test máy trước khi mua key |
 
 ---
 
 ## 📐 Kiến trúc pipeline
 
 ```
-input/                           ← Bỏ ảnh raw (.jpeg, 1 ảnh = 1 chương)
+input/                           ← Bỏ ảnh raw (.jpeg/.png/.webp, 1 ảnh = 1 chương)
   │
   ▼
-[1. pre_split]  Cắt ảnh >8000px thành tiles ~6000px
+[1. pre_split]  Cắt ảnh >6000px thành tiles ~6000px
                 Overlap 200px để không cắt đôi text bubble
   │
   ▼
@@ -51,7 +53,7 @@ input/                           ← Bỏ ảnh raw (.jpeg, 1 ảnh = 1 chương
     │   ├─ Context 3 tiles trước (giữ mạch truyện)
     │   └─ Glossary (giữ tên nhân vật consistent)
     ├─ Inpaint              → Xóa text raw khỏi ảnh
-    └─ Render text          → Chèn text Vietnamese vào bubble
+    └─ Render text          → Chèn text Vietnamese vào bubble (font trong fonts/)
   │
   ▼
 [3. glossary]   Extract proper nouns từ text đã dịch
@@ -59,6 +61,7 @@ input/                           ← Bỏ ảnh raw (.jpeg, 1 ảnh = 1 chương
   │
   ▼
 [4. post_stitch]  Ghép tiles lại thành ảnh dài hoàn chỉnh
+                  (đường nối đặt giữa vùng overlap, khớp pixel tuyệt đối)
   │
   ▼
 output/                          ← Ảnh đã chèn text Vietnamese
@@ -71,81 +74,83 @@ output/                          ← Ảnh đã chèn text Vietnamese
 | Yêu cầu | Tối thiểu | Khuyến nghị |
 |---------|-----------|-------------|
 | **OS** | macOS 12+ / Linux / Windows 10+ | macOS Apple Silicon (M1-M4) |
-| **Python** | 3.10+ | 3.12+ |
+| **Python** | **3.10 – 3.12** | 3.12 (đã test) |
 | **RAM** | 8 GB | 16 GB+ |
-| **GPU** | Không bắt buộc (dùng Ollama Cloud) | Apple Silicon MPS hoặc NVIDIA CUDA |
-| **Ollama Cloud** | API key (miễn phí) | Pro plan cho tốc độ cao hơn |
-| **Disk** | 2 GB (cho manga-image-translator models) | 5 GB+ |
+| **GPU** | Không bắt buộc (dịch qua Ollama Cloud) | Apple Silicon MPS hoặc NVIDIA CUDA |
+| **Ollama Cloud** | API key (có free tier) | Pro plan cho tốc độ cao hơn |
+| **Disk** | ~8 GB (Python deps + models của manga-image-translator) | 10 GB+ |
 
 ---
 
 ## 📦 Cài đặt
 
-### Bước 1: Clone repo
+### Bước 1: Clone 2 repo (pipeline + engine)
+
+> ⚠️ `manga-image-translator` **không có trên PyPI** — phải cài từ source.
 
 ```bash
 git clone https://github.com/vanko001/webtoon-translator.git
+git clone --depth 1 https://github.com/zyddnys/manga-image-translator.git
 cd webtoon-translator
 ```
 
-### Bước 2: Tạo virtual environment
+### Bước 2: Cài Python 3.12 (nếu chưa có)
 
 ```bash
-python3 -m venv venv
+# macOS
+brew install python@3.12
+```
+
+### Bước 3: Tạo virtual environment + cài dependencies
+
+```bash
+python3.12 -m venv venv
 source venv/bin/activate        # macOS / Linux
 # venv\Scripts\activate          # Windows
-```
 
-### Bước 3: Cài Python dependencies
-
-```bash
+pip install -U pip wheel setuptools
 pip install -r requirements.txt
+pip install -r ../manga-image-translator/requirements.txt
+pip install -e ../manga-image-translator --no-deps --ignore-requires-python
 ```
 
-### Bước 4: Cài manga-image-translator (engine chính)
+> `--ignore-requires-python` vì engine khai báo `<3.12` nhưng chạy tốt trên 3.12 (đã test trên Mac M4).
 
-**Cách A — pip (nhanh):**
+**Vá 2 bug `--save-text-file` của engine** (bắt buộc — nếu không glossary/character sheet không có dữ liệu):
+
 ```bash
-pip install manga-image-translator
+cd ../manga-image-translator
+git apply ../webtoon-translator/patches/manga-image-translator-save-text-fix.patch
 ```
 
-**Cách B — từ source (khuyến nghị, để có GPU support):**
-```bash
-git clone https://github.com/zyddnys/manga-image-translator
-cd manga-image-translator
-pip install -r requirements.txt
-pip install -e .
-cd ..
-```
-
-### Bước 5: Lấy Ollama Cloud API key
+### Bước 4: Lấy Ollama Cloud API key
 
 1. Vào **https://ollama.com/settings**
 2. Tạo API key
 3. Set environment variable:
 
 ```bash
-# macOS / Linux — thêm vào ~/.bashrc hoặc ~/.zshrc
-export OLLAMA_API_KEY=oll-your-key-here
+# macOS / Linux — thêm vào ~/.zshrc hoặc ~/.bashrc
+export OLLAMA_API_KEY=your-key-here
 
 # Verify
 echo $OLLAMA_API_KEY
 ```
 
-### Bước 6: Chuẩn bị font Vietnamese
+### Bước 5: Font Vietnamese
 
-Bỏ font `.ttf` hỗ trợ tiếng Việt vào thư mục `fonts/`:
+Repo đã kèm sẵn **Noto Sans** (`fonts/NotoSans-Regular.ttf`, hỗ trợ đầy đủ tiếng Việt).
+Muốn đổi font: bỏ file `.ttf` khác vào `fonts/` (pipeline tự lấy font đầu tiên theo alphabet).
+
+Font gợi ý: **Be Vietnam Pro**, **Noto Sans**, **Arial Unicode**.
+
+### Bước 6 (khuyến nghị): Smoke-test không cần API key
 
 ```bash
-# Tải Noto Sans (miễn phí, hỗ trợ đầy đủ Vietnamese)
-# Hoặc dùng font có sẵn:
-cp /Library/Fonts/Arial\ Unicode.ttf fonts/
+python run_pipeline.py --config test_e2e/config.yaml
 ```
 
-Font khuyến nghị:
-- **Be Vietnam Pro** — thiết kế cho Vietnamese, đẹp
-- **Noto Sans** — đầy đủ Unicode
-- **Arial Unicode** — phổ biến
+Chạy full pipeline (detect → OCR → inpaint → render → stitch) với `translator: "original"` trên ảnh test — lần đầu sẽ tải models (~1-2 GB). Nếu ra ảnh trong `test_e2e/output/` là máy đã sẵn sàng.
 
 ---
 
@@ -164,42 +169,11 @@ cp /path/to/your/webtoon/*.jpeg input/
 python run_pipeline.py
 ```
 
-Output:
-```
-🚀 Pipeline webtoon translator
-   Input:    input/ (50 chương)
-   Output:   output/
-   Model:    qwen3.5 @ https://ollama.com/v1
-   Target:   Vietnamese
-   Context:  3 tiles
-   Glossary: 0 entries
-
-============================================================
-[pipeline] Xử lý chương: ch001.jpg
-============================================================
-  [split] ch001: 3 tiles
-  [mit] Running: ... (tiles: work/tiles/ch001)
-  [mit] OK -> work/translated/ch001
-  [glossary] +12 entries mới (total: 12)
-  [stitch] 3 tiles -> output/ch001.jpg
-  [done] ch001 -> output/ch001.jpg
-
-============================================================
-✅ Hoàn thành: 50/50 chương
-   Glossary: 347 entries
-   Output:   output/
-============================================================
-```
-
 ### Resume (bỏ qua chương đã xong)
-
-Nếu pipeline bị crash hoặc dừng, chạy lại với `--resume`:
 
 ```bash
 python run_pipeline.py --resume
 ```
-
-→ Bỏ qua các chương đã xong, chỉ chạy chương chưa hoàn thành.
 
 ### Chỉ chạy 1 chương
 
@@ -212,17 +186,10 @@ python run_pipeline.py --chapter ch005
 Chỉnh `config.yaml`:
 
 ```yaml
-# Nhanh, đa ngôn ngữ (default)
-ollama_model: "qwen3.5"
-
-# Chất lượng cao, chậm hơn
-ollama_model: "deepseek-v4-pro"
-
-# Nhanh nhất, rẻ
-ollama_model: "deepseek-v4-flash"
-
-# Tốt cho Asian languages
-ollama_model: "glm-5.2"
+ollama_model: "qwen3.5"           # nhanh, đa ngôn ngữ (default)
+# ollama_model: "deepseek-v4-pro"  # chất lượng cao, chậm hơn
+# ollama_model: "deepseek-v4-flash" # nhanh nhất, rẻ
+# ollama_model: "glm-5.2"          # tốt cho Asian languages
 ```
 
 ---
@@ -231,47 +198,50 @@ ollama_model: "glm-5.2"
 
 File `config.yaml` chứa toàn bộ config. Các thông số quan trọng:
 
+### Ngôn ngữ đích
+
+```yaml
+# Dùng MÃ ngôn ngữ của manga-image-translator (không phải tên đầy đủ):
+# VIN=Vietnamese, ENG=English, JPN=Japanese, THA=Thai, IND=Indonesian...
+target_lang: "VIN"
+```
+
+Ngôn ngữ **nguồn** không cần khai báo — OCR tự nhận diện (Korean/Japanese/Chinese đều được).
+
 ### Kích thước tile (cắt ảnh)
 
 ```yaml
-# Chiều cao mỗi tile (px) - dưới 10240px an toàn với manga-image-translator
-tile_height: 6000
-
-# Overlap giữa tiles (px) - tránh cắt đôi text bubble
-overlap: 200
+tile_height: 6000   # Chiều cao mỗi tile (px); 8500 = nhanh hơn (ít tile hơn), vẫn an toàn
+overlap: 200        # Overlap giữa tiles (px)
 ```
 
-- Ảnh webtoon rất dài (>15000px) hoặc bị OOM → giảm `tile_height` xuống `4000-5000`
-- Overlap 200px đủ để không cắt bubble, không cần tăng
+- Đường cắt tự động né text bubble: quét ±800px quanh vị trí cắt lý tưởng, chọn dải ngang "yên tĩnh" nhất (khoảng trống giữa panel)
+- Bị OOM khi inpaint → giảm `tile_height` xuống `4000-5000`
 
 ### Context size (giữ mạch truyện)
 
 ```yaml
-# Số tile trước truyền làm context khi dịch
-context_size: 3
+context_size: 3   # Số tile trước truyền làm context khi dịch
 ```
 
-- Tăng lên `5` nếu muốn AI hiểu mạch truyện sâu hơn (nhưng chậm hơn + tốn token hơn)
-- Giảm xuống `1` nếu chạy nhanh, không quan tâm context
+- Tăng lên `5` nếu muốn AI hiểu mạch truyện sâu hơn (chậm hơn + tốn token hơn)
+- Giảm xuống `0-1` nếu muốn chạy nhanh
 
-### Batch size (xử lý song song)
+### Engine tuning (Mac M-series)
 
 ```yaml
-# Số ảnh xử lý song song
-batch_size: 3
+use_gpu: true                  # MPS tự bật trên Apple Silicon
+inpainter: "lama_large"        # đổi "lama_mpe" nếu máy 8GB RAM
+inpainting_precision: "bf16"   # bf16 chạy tốt trên MPS (macOS 14+); "fp32" nếu lỗi
+detection_size: 2048           # tăng 2560 nếu chữ nhỏ khó detect
+batch_size: 3                  # số tile dịch chung 1 batch
 ```
-
-- Mac M1-M4 RAM 16GB+ → tăng lên `5`
-- Mac RAM 8GB → giữ `2-3` tránh OOM
 
 ### Glossary (terminology xuyên series)
 
 ```yaml
-# Dùng LLM extract proper nouns (chất lượng cao, tốn thêm API call)
-glossary_extract_llm: true
-
-# Export sang format manga-image-translator
-glossary_export_mit: true
+glossary_extract_llm: true   # Dùng LLM extract proper nouns (tốn thêm API call)
+glossary_export_mit: true    # Đưa glossary vào prompt dịch của engine
 ```
 
 ---
@@ -288,16 +258,19 @@ webtoon-translator/
 ├── requirements.txt           # Python dependencies
 ├── README.md                 # File này
 │
-├── input/                    # ← Bỏ ảnh raw vào đây (.jpeg/.png, 1 ảnh = 1 chương)
+├── input/                    # ← Bỏ ảnh raw vào đây (1 ảnh = 1 chương)
 ├── output/                   # ← Ảnh đã dịch xuất ra đây
-├── fonts/                    # Font Vietnamese (.ttf)
+├── fonts/                    # Font Vietnamese (đã kèm NotoSans-Regular.ttf)
+├── test_e2e/                 # Smoke-test không cần API key
 │
-├── work/                     # Working directory (tự sinh, không cần quan tâm)
-│   ├── tiles/                #   Tiles sau khi cắt
+├── work/                     # Working directory (tự sinh)
+│   ├── tiles/                #   Tiles sau khi cắt (+ meta.json từng chương)
 │   ├── translated/           #   Tiles đã dịch
+│   ├── texts/                #   Text gốc + bản dịch từng chương (sửa tay được)
+│   ├── mit_config.json       #   Config sinh tự động cho engine
 │   └── progress.json         #   Checkpoint (cho --resume)
 │
-└── glossary.json             # Terminology tích lũy (tự sinh, càng dịch càng phong phú)
+└── glossary.json             # Terminology tích lũy (tự sinh)
 ```
 
 ---
@@ -307,93 +280,74 @@ webtoon-translator/
 ### `OLLAMA_API_KEY chưa set`
 
 ```bash
-# Set key
-export OLLAMA_API_KEY=oll-your-key-here
-
-# Verify
+export OLLAMA_API_KEY=your-key-here
 echo $OLLAMA_API_KEY
 ```
 
-### `manga-image-translator` không tìm thấy
+### `manga-image-translator chưa cài trong môi trường Python này`
 
 ```bash
-# Cài lại
-pip install manga-image-translator
-
-# Hoặc từ source
-git clone https://github.com/zyddnys/manga-image-translator
-cd manga-image-translator && pip install -e .
+git clone --depth 1 https://github.com/zyddnys/manga-image-translator.git ../manga-image-translator
+pip install -r ../manga-image-translator/requirements.txt
+pip install -e ../manga-image-translator --no-deps --ignore-requires-python
 ```
 
 ### OOM (out of memory) khi inpaint
 
-Giảm `tile_height` trong `config.yaml`:
+Giảm trong `config.yaml`:
 
 ```yaml
-tile_height: 4000    # giảm từ 6000 xuống 4000
-overlap: 150         # giảm overlap tương ứng
+tile_height: 4000        # giảm từ 6000
+inpainter: "lama_mpe"    # nhẹ hơn lama_large
+batch_size: 1
 ```
 
-### Text render lỗi / hiển thị方块
+### Text render lỗi / vỡ dấu tiếng Việt
 
-Thiếu font Vietnamese. Bỏ font `.ttf` vào `fonts/`:
+Pipeline tự lấy font đầu tiên trong `fonts/`. Kiểm tra folder có file `.ttf` hỗ trợ tiếng Việt (repo kèm sẵn Noto Sans). Log lúc chạy in ra dòng `Font: ...` — nếu ghi `KHÔNG CÓ` thì bỏ font vào `fonts/`.
 
-```bash
-# Download Noto Sans
-wget -O fonts/NotoSans.ttf "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/full/ttf/NotoSans-Regular.ttf"
-```
+### Lỗi MPS trên Mac (op không hỗ trợ)
+
+Pipeline tự set `PYTORCH_ENABLE_MPS_FALLBACK=1` (op chưa hỗ trợ tự chạy CPU). Nếu vẫn crash: set `use_gpu: false` trong config.
 
 ### Pipeline crash giữa chừng
 
 ```bash
-# Chạy lại với --resume
 python run_pipeline.py --resume
 ```
 
-→ Tự bỏ qua chương đã xong (dựa trên `work/progress.json`).
-
-### Inpaint không chạy với ảnh rất dài
-
-manga-image-translator có lỗi với ảnh >10240px ([issue #953](https://github.com/zyddnys/manga-image-translator/issues/953)). Pipeline này **tự động** cắt ảnh trước nên không bị lỗi này. Nhưng nếu vẫn gặp, giảm `tile_height` xuống `4000`.
+→ Tự bỏ qua chương đã xong (dựa trên `work/progress.json`). Trong 1 chương, tile đã dịch xong cũng không dịch lại.
 
 ---
 
 ## ❓ FAQ
 
 **Q: Pipeline có cần GPU không?**
-A: Không bắt buộc. Dùng Ollama Cloud nên GPU chỉ cần cho manga-image-translator (OCR + inpaint). Trên Mac M1-M4, MPS tự động bật. Trên máy không GPU, set `use_gpu: false` trong config.
+A: Không bắt buộc. Dịch chạy trên Ollama Cloud; GPU chỉ dùng cho OCR + inpaint. Trên Mac M1-M4, MPS tự bật. Máy không GPU: set `use_gpu: false`.
 
-**Q: Bao nhiêu chương thì chạy được?**
-A: Đã test với 50-200 chương. Glossary tích lũy xuyên suốt nên càng dịch nhiều, tên nhân vật càng consistent.
+**Q: Test máy trước khi mua API key được không?**
+A: Được: `python run_pipeline.py --config test_e2e/config.yaml` — chạy full pipeline ảnh với translator `original` (giữ nguyên text, không gọi API).
 
 **Q: Có dịch được Japanese/Chinese không?**
-A: Có. Đổi `source_lang` và `target_lang` trong `config.yaml`. VD: Japanese → Vietnamese:
-```yaml
-source_lang: "Japanese"
-target_lang: "Vietnamese"
-```
+A: Có. OCR tự nhận diện ngôn ngữ nguồn, chỉ cần giữ `target_lang: "VIN"`.
 
 **Q: Chi phí Ollama Cloud bao nhiêu?**
-A: Free plan có 1 concurrent model, đủ test. Pro $20/tháng cho 3 concurrent. Xem: https://ollama.com/cloud
+A: Xem https://ollama.com/cloud — có free tier đủ để test.
 
 **Q: Có chỉnh sửa text sau khi dịch không?**
-A: Có. Text đã dịch lưu trong `work/translated/<chapter>/` (file `.txt`). Sửa rồi chạy lại:
-```bash
-python run_pipeline.py --chapter ch005
-# Hoặc dùng manga-image-translator editor trực tiếp
-```
+A: Text đã dịch lưu trong `work/texts/<chapter>.txt` (kèm tọa độ từng bubble). Chỉnh translation rồi chạy lại chương đó, hoặc dùng editor của manga-image-translator.
 
-**Q: Glossary.json có thể share giữa project không?**
-A: Có. Copy `glossary.json` sang project khác → tên nhân vật giữ consistent xuyên suốt nhiều series.
+**Q: Glossary.json có share giữa project được không?**
+A: Có. Copy `glossary.json` sang project khác → tên nhân vật giữ consistent.
 
 ---
 
 ## 📝 Ghi chú
 
 - Pipeline **không** dịch lại chương đã xong khi `--resume`
-- Glossary tích lũy tự động — càng dịch nhiều chương, consistency càng cao
-- Overlap 200px giữa tiles đảm bảo không cắt đôi text bubble
-- Output giữ nguyên format gốc (PNG/JPG) theo extension file input
+- Glossary giữ **bản dịch đầu tiên** của mỗi tên riêng để consistent xuyên chương
+- Đường nối giữa 2 tile đặt ở **giữa vùng overlap** → mỗi tile có 100px lề an toàn, ghép lại khớp pixel tuyệt đối
+- Output giữ nguyên extension file input (PNG/JPG)
 - Repo này dùng `manga-image-translator` làm engine backend ([github.com/zyddnys/manga-image-translator](https://github.com/zyddnys/manga-image-translator))
 
 ## 📄 License

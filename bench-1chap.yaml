@@ -1,0 +1,28 @@
+# Benchmark 1 chương với settings tốc độ — đo mục tiêu ≤2 phút/chương
+input_dir: "/Users/ledoanvu/Desktop/crawl/manhwa/big-dog"
+output_dir: "output/bench"
+work_dir: "work/bench"
+fonts_dir: "fonts"
+glossary_file: "work/bench/glossary.json"
+progress_file: "work/bench/progress.json"
+
+ollama_base_url: "https://ollama.com/v1"
+ollama_model: "glm-5.2"
+
+translator: "chatgpt"
+series_mode: false
+target_lang: "VIN"
+context_size: 6
+batch_size: 3
+use_gpu: true
+attempts: 3
+overwrite: true
+
+inpainter: "lama_mpe"
+inpainting_size: 1536
+
+glossary_extract_llm: false   # tắt để đo thuần thời gian dịch ảnh
+glossary_export_mit: false
+
+tile_height: 8500
+overlap: 200

@@ -27,38 +27,122 @@ Ví dụ: [{"source": "김도현", "target": "Kim Do-hyun", "desc": "tên nhân 
 
 Trả về JSON array, không kèm giải thích thêm:"""
 
+# Prompt cập nhật hồ sơ nhân vật (xưng hô + giọng điệu) từ thoại đã dịch.
+CHARACTER_PROMPT = """Bạn là trợ lý biên tập truyện dịch. Dưới đây là (1) hồ sơ nhân vật hiện tại
+và (2) các lời thoại mới đã dịch (dạng "gốc => bản dịch").
+
+Nhiệm vụ: CẬP NHẬT hồ sơ nhân vật. Với mỗi nhân vật xác định được, ghi lại:
+- Cách xưng hô với từng nhân vật khác. BẮT BUỘC chọn đúng MỘT cặp đại từ duy nhất
+  cho mỗi quan hệ (vd: "xưng 'tôi' gọi 'cậu' với Sarang" — KHÔNG được liệt kê nhiều
+  lựa chọn kiểu 'tôi/tớ/mình'). Nếu thoại cũ dao động, chọn cách xuất hiện nhiều nhất.
+- Cách xưng khi độc thoại nội tâm/narration (thường là 'tôi').
+- Giọng điệu đặc trưng (vd: "cộc lốc, hay chửi thề", "lễ phép, nói kiểu trẻ con").
+Giữ nguyên thông tin cũ còn đúng, chỉ bổ sung/sửa khi có bằng chứng mới trong thoại.
+Chỉ đưa nhân vật có tên rõ ràng, bỏ qua người qua đường.
+
+Hồ sơ hiện tại (JSON):
+{sheet}
+
+Thoại mới:
+{text}
+
+Trả về TOÀN BỘ hồ sơ đã cập nhật, chỉ là JSON array dạng:
+[{"name": "Kim Do-hyun", "notes": "xưng 'anh' gọi 'em' với Soo-bin; giọng trầm, ít nói"}]
+Không kèm giải thích:"""
+
 
 class Glossary:
     """Quản lý glossary tích lũy xuyên suốt series."""
 
     def __init__(self, path: str = GLOSSARY_FILE):
         self.path = path
-        self.entries: list[dict] = []
+        self.entries: list[dict] = []  # thuật ngữ: {source, target, desc}
+        self.characters: list[dict] = []  # hồ sơ nhân vật: {name, notes}
         self._load()
 
     def _load(self) -> None:
-        """Load glossary từ file JSON."""
-        if os.path.exists(self.path):
-            with open(self.path, "r", encoding="utf-8") as f:
-                self.entries = json.load(f)
-            print(f"[glossary] Loaded {len(self.entries)} entries từ {self.path}")
+        """Load glossary từ file JSON.
+
+        Hỗ trợ 2 schema: list thuần (bản cũ, chỉ terms) và dict
+        {"terms": [...], "characters": [...]}.
+        """
+        if not os.path.exists(self.path):
+            return
+        with open(self.path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            self.entries = data
+        else:
+            self.entries = data.get("terms", [])
+            self.characters = data.get("characters", [])
+        print(
+            f"[glossary] Loaded {len(self.entries)} terms, "
+            f"{len(self.characters)} nhân vật từ {self.path}"
+        )
 
     def save(self) -> None:
         """Lưu glossary ra file."""
         with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.entries, f, ensure_ascii=False, indent=2)
-        print(f"[glossary] Saved {len(self.entries)} entries -> {self.path}")
+            json.dump(
+                {"terms": self.entries, "characters": self.characters},
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+        print(
+            f"[glossary] Saved {len(self.entries)} terms, "
+            f"{len(self.characters)} nhân vật -> {self.path}"
+        )
+
+    def update_characters(self, new_sheet: list[dict]) -> None:
+        """Thay hồ sơ nhân vật bằng bản LLM đã cập nhật (merge theo name).
+
+        LLM nhận hồ sơ cũ + thoại mới và trả về TOÀN BỘ hồ sơ mới, nên ở đây
+        chỉ cần validate và giữ lại nhân vật cũ nếu bản mới lỡ bỏ sót.
+        """
+        cleaned = [
+            {"name": c["name"].strip(), "notes": str(c.get("notes", "")).strip()}
+            for c in new_sheet
+            if isinstance(c, dict) and c.get("name", "").strip()
+        ]
+        if not cleaned:
+            return
+        new_names = {c["name"] for c in cleaned}
+        kept = [c for c in self.characters if c["name"] not in new_names]
+        self.characters = cleaned + kept
+        print(f"[glossary] Hồ sơ nhân vật: {len(self.characters)} nhân vật")
+
+    def to_character_sheet_prompt(self, max_chars: int = 4000) -> str:
+        """Format hồ sơ nhân vật để tiêm vào system prompt của translator."""
+        if not self.characters:
+            return ""
+        lines = []
+        total = 0
+        for c in self.characters:
+            line = f"- {c['name']}: {c['notes']}"
+            total += len(line)
+            if total > max_chars:
+                break
+            lines.append(line)
+        return "\n".join(lines)
 
     def add(self, source: str, target: str, desc: str = "") -> None:
-        """Thêm 1 entry nếu chưa có (tránh trùng)."""
-        # Check trùng theo source
+        """Thêm 1 entry nếu chưa có (tránh trùng).
+
+        Dedup theo source; entry không có source (từ regex fallback) dedup theo target.
+        """
+        if not source and not target:
+            return
         for e in self.entries:
-            if e["source"] == source:
-                # Update target nếu thay đổi
-                if target and e["target"] != target:
-                    e["target"] = target
+            if source:
+                if e["source"] != source:
+                    continue
+                # Đã có source này → giữ bản dịch ĐẦU TIÊN để consistent xuyên chương,
+                # chỉ bổ sung desc nếu còn thiếu
                 if desc and not e.get("desc"):
                     e["desc"] = desc
+                return
+            if e["target"] == target:
                 return
         self.entries.append({"source": source, "target": target, "desc": desc})
 
@@ -82,7 +166,9 @@ class Glossary:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             for e in self.entries:
-                f.write(f"{e['source']}\t{e['target']}\n")
+                # Entry không có source (regex fallback) vô dụng với engine → bỏ qua
+                if e["source"] and e["target"]:
+                    f.write(f"{e['source']}\t{e['target']}\n")
         print(f"[glossary] Exported MIT format -> {out_path}")
 
     def to_prompt_context(self, max_entries: int = 50) -> str:
@@ -130,7 +216,7 @@ def extract_proper_nouns_llm(
     """
     # Giới hạn text để không vượt context
     snippet = text[:3000]
-    prompt = EXTRACT_PROMPT.format(text=snippet)
+    prompt = EXTRACT_PROMPT.replace("{text}", snippet)
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -142,9 +228,51 @@ def extract_proper_nouns_llm(
         # Tìm JSON array trong response (LLM có thể kèm markdown)
         match = re.search(r"\[.*\]", content, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-    except (json.JSONDecodeError, Exception) as e:
+            entries = json.loads(match.group(0))
+            # Chỉ giữ entries đúng cấu trúc
+            return [
+                e
+                for e in entries
+                if isinstance(e, dict) and (e.get("source") or e.get("target"))
+            ]
+    except Exception as e:
         print(f"[glossary] LLM extract failed: {e}")
+    return []
+
+
+def extract_character_sheet_llm(
+    text: str, current_sheet: list[dict], client, model: str
+) -> list[dict]:
+    """Dùng LLM cập nhật hồ sơ nhân vật (xưng hô + giọng điệu) từ thoại đã dịch.
+
+    Args:
+        text: Các cặp thoại "gốc => dịch" của phần vừa dịch.
+        current_sheet: Hồ sơ nhân vật hiện tại [{"name":..., "notes":...}].
+        client: OpenAI client (đã cấu hình base_url Ollama Cloud).
+        model: Tên model.
+
+    Returns:
+        Hồ sơ nhân vật đã cập nhật (toàn bộ), hoặc [] nếu extract thất bại.
+    """
+    # Model context dài — gửi nhiều thoại để nắm đủ quan hệ (cắt ở 30k ký tự)
+    snippet = text[-30000:]
+    sheet_json = json.dumps(current_sheet, ensure_ascii=False)
+    prompt = CHARACTER_PROMPT.replace("{sheet}", sheet_json).replace("{text}", snippet)
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            stream=False,
+        )
+        content = resp.choices[0].message.content.strip()
+        match = re.search(r"\[.*\]", content, re.DOTALL)
+        if match:
+            sheet = json.loads(match.group(0))
+            if isinstance(sheet, list):
+                return sheet
+    except Exception as e:
+        print(f"[glossary] Character sheet extract failed: {e}")
     return []
 
 

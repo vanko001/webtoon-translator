@@ -5,7 +5,7 @@
 input_dir: "input"          # Folder chứa ảnh raw (.jpeg, 1 ảnh = 1 chương)
 output_dir: "output"        # Folder output (ảnh đã chèn text Vietnamese)
 work_dir: "work"            # Working directory (tiles, translated, progress)
-fonts_dir: "fonts"          # Folder chứa font Vietnamese
+fonts_dir: "fonts"          # Folder chứa font Vietnamese (.ttf) — pipeline tự lấy font đầu tiên
 glossary_file: "glossary.json"   # File glossary tích lũy xuyên suốt series
 progress_file: "work/progress.json"
 
@@ -13,24 +13,47 @@ progress_file: "work/progress.json"
 # Set OLLAMA_API_KEY trong env trước khi chạy:
 #   export OLLAMA_API_KEY=your_key_here
 ollama_base_url: "https://ollama.com/v1"
-# Model có sẵn trên Ollama Cloud:
-#   - qwen3.5          (đa ngôn ngữ, tốt cho Korean→Vietnamese)
-#   - deepseek-v4-pro  (chất lượng cao, chậm hơn)
+# Model có sẵn trên Ollama Cloud (https://ollama.com/search?c=cloud):
+#   - qwen3.5           (đa ngôn ngữ, tốt cho Korean→Vietnamese)
+#   - deepseek-v4-pro   (chất lượng cao, chậm hơn)
 #   - deepseek-v4-flash (nhanh, rẻ)
-#   - glm-5.2          (tốt cho Asian languages)
-ollama_model: "qwen3.5"
+#   - glm-5.2           (tốt cho Asian languages)
+ollama_model: "glm-5.2"
 
 # manga-image-translator settings
-target_lang: "Vietnamese"
-source_lang: "Korean"
+# translator: "chatgpt" = LLM qua Ollama Cloud (cần OLLAMA_API_KEY).
+#   Đây là translator DUY NHẤT được engine hỗ trợ context (--context-size)
+#   và glossary — "custom_openai" gọi được Ollama nhưng không có 2 tính năng đó.
+#   "original" = giữ nguyên text, để smoke-test không cần API key.
+translator: "chatgpt"
+
+# Series mode: gộp tiles của TẤT CẢ chương vào 1 lần chạy engine
+# → context dịch chảy liền mạch xuyên chương (nên dùng model context dài).
+series_mode: true
+# target_lang dùng MÃ ngôn ngữ của engine: VIN=Vietnamese, ENG=English, JPN=Japanese...
+# (ngôn ngữ nguồn không cần khai báo — OCR tự nhận diện)
+target_lang: "VIN"
 context_size: 3             # Số tile trước truyền làm context (giữ mạch truyện)
-batch_size: 3              # Số ảnh xử lý song song
-use_gpu: true              # Bật GPU acceleration (MPS trên Apple Silicon)
+batch_size: 3               # Số tile dịch chung 1 batch
+use_gpu: true               # MPS trên Apple Silicon (M1-M4), CUDA trên NVIDIA
+attempts: 2                 # Số lần retry khi lỗi mạng/API
+overwrite: false            # true = dịch lại cả tile đã có output (khi đổi model/config)
+
+# Engine tuning (mặc định đã tối ưu cho Mac M-series 16GB)
+detection_size: 2048        # Kích thước detect text; tăng 2560 nếu chữ nhỏ khó detect
+inpainter: "lama_mpe"       # nhanh; đổi "lama_large" nếu cần inpaint đẹp nhất (chậm hơn ~30%)
+inpainting_size: 1536       # độ phân giải inpaint; 2048 = đẹp hơn, chậm hơn
+inpainting_precision: "bf16"  # bf16 chạy tốt trên MPS (macOS 14+); đổi "fp32" nếu gặp lỗi
+ocr: "48px"                 # OCR model, 48px hỗ trợ Korean tốt
+font_size_offset: 0         # Tăng/giảm cỡ chữ render (px)
 
 # Pre-split settings (cắt ảnh dài webtoon)
-tile_height: 6000          # Chiều cao mỗi tile (px) - dưới 10240px an toàn
-overlap: 200               # Overlap giữa tiles (px) - tránh cắt đôi bubble
+tile_height: 6000           # Chiều cao mỗi tile (px) - dưới 10240px an toàn
+overlap: 200                # Overlap giữa tiles (px) - tránh cắt đôi bubble
 
 # Glossary settings
-glossary_extract_llm: true   # Dùng LLM extract proper nouns (chất lượng cao)
-glossary_export_mit: true    # Export sang format manga-image-translator
+glossary_extract_llm: true    # Dùng LLM extract proper nouns (chất lượng cao)
+glossary_export_mit: true     # Export sang format manga-image-translator
+# Hồ sơ nhân vật: LLM duy trì cách xưng hô + giọng điệu từng nhân vật trong
+# glossary.json, tiêm vào system prompt dịch → xưng hô nhất quán xuyên series
+character_sheet: true

@@ -1,0 +1,24 @@
+diff --git a/manga_translator/mode/local.py b/manga_translator/mode/local.py
+index b6846c9..be71f9f 100644
+--- a/manga_translator/mode/local.py
++++ b/manga_translator/mode/local.py
+@@ -76,7 +76,8 @@ class MangaTranslatorLocal(MangaTranslator):
+         self.textlines = []
+         self.attempts = params.get('attempts', None)
+         self.skip_no_text = params.get('skip_no_text', False)
+-        self.text_output_file = params.get('text_output_file', None)
++        # Fix: CLI arg là --save-text-file (dest save_text_file), không có 'text_output_file'
++        self.text_output_file = params.get('text_output_file', None) or params.get('save_text_file', None)
+         self.save_quality = params.get('save_quality', None)
+         self.text_regions = params.get('text_regions', None)
+         self.save_text_file = params.get('save_text_file', None)
+@@ -290,7 +291,8 @@ class MangaTranslatorLocal(MangaTranslator):
+                         img_filename = p + '-orig' + ext
+                         img_path = os.path.join(os.path.dirname(dest), img_filename)
+                         img.save(img_path, quality=self.save_quality)
+-                    if self.text_regions:
++                    # Fix: self.text_regions luôn None (không có param CLI này) — phải check ctx
++                    if ctx.text_regions:
+                         self._save_text_to_file(path, ctx)
+                 return True
+         return False
