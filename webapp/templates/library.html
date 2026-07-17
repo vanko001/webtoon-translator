@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Thư viện{% endblock %}
+{% block body %}
+<h2>Thư viện ({{ series|length }} bộ)</h2>
+<div class="grid">
+  {% for s in series %}
+  <a class="card" href="/doc/{{ s.name }}">
+    <img loading="lazy" src="/cover/{{ s.name }}" alt="">
+    <div class="t">{{ s.name }}</div>
+    <div class="n">{{ s.n }} chương</div>
+  </a>
+  {% endfor %}
+</div>
+{% if not series %}<p>Chưa có bộ nào được dịch. Vào <a href="/control">Điều khiển</a> để dịch bộ đầu tiên.</p>{% endif %}
+{% endblock %}

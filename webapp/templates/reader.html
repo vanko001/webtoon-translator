@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ series }} — {{ stem }}{% endblock %}
+{% block nav %}<span style="color:#8a93a6;font-size:14px">{{ series }} / {{ stem }}</span>{% endblock %}
+{% block body %}
+<div style="max-width:820px;margin:0 auto">
+  {% for s in slices %}
+  <img loading="lazy" src="/img/{{ series }}/{{ stem }}/{{ s }}"
+       style="width:100%;display:block" alt="">
+  {% endfor %}
+  <div style="display:flex;justify-content:space-between;padding:20px 0">
+    {% if prev %}<a href="/doc/{{ series }}/{{ prev }}">‹ {{ prev }}</a>{% else %}<span></span>{% endif %}
+    <a href="/doc/{{ series }}">Mục lục</a>
+    {% if next %}<a href="/doc/{{ series }}/{{ next }}">{{ next }} ›</a>{% else %}<span></span>{% endif %}
+  </div>
+</div>
+{% endblock %}

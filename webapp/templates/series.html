@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ series }}{% endblock %}
+{% block body %}
+<h2>{{ series }}</h2>
+<div class="list">
+  {% for c in chapters %}
+  <a href="/doc/{{ series }}/{{ c.stem }}"><span>{{ c.stem }}</span><span>›</span></a>
+  {% endfor %}
+</div>
+{% endblock %}

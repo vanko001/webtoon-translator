@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Webtoon{% endblock %}</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #0f1115; color: #e6e6e6;
+  font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: #7fb4ff; text-decoration: none; }
+header { position: sticky; top: 0; z-index: 10; background: #161a22cc;
+  backdrop-filter: blur(8px); padding: 10px 16px; display: flex; gap: 16px;
+  align-items: center; border-bottom: 1px solid #232838; }
+header .brand { font-weight: 700; color: #fff; }
+main { max-width: 960px; margin: 0 auto; padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 14px; }
+.card { background: #161a22; border: 1px solid #232838; border-radius: 10px;
+  overflow: hidden; display: block; }
+.card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; display: block; background:#0a0c10; }
+.card .t { padding: 8px 10px; font-size: 13px; color: #dfe3ea;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .n { padding: 0 10px 8px; font-size: 12px; color: #8a93a6; }
+.list a { display:flex; justify-content:space-between; padding: 12px 14px;
+  background:#161a22; border:1px solid #232838; border-radius:8px; margin-bottom:8px; }
+button { background:#2b5fd9; color:#fff; border:0; border-radius:6px;
+  padding:6px 14px; font-size:14px; cursor:pointer; }
+button.gray { background:#333a4d; }
+button:disabled { opacity:.45; cursor:default; }
+table { width:100%; border-collapse: collapse; font-size:14px; }
+th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #232838; }
+.badge { padding:2px 8px; border-radius:10px; font-size:12px; }
+.b-done{background:#14532d;color:#a7f3d0}.b-run{background:#1e3a8a;color:#bfdbfe}
+.b-none{background:#333a4d;color:#cbd5e1}.b-part{background:#713f12;color:#fde68a}
+.b-queue{background:#4c1d95;color:#ddd6fe}
+pre#log { background:#0a0c10; border:1px solid #232838; border-radius:8px;
+  padding:12px; height:45vh; overflow:auto; font-size:12px; white-space:pre-wrap; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header>
+  <a class="brand" href="/">📚 Webtoon</a>
+  <a href="/control">⚙️ Điều khiển</a>
+  {% block nav %}{% endblock %}
+</header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

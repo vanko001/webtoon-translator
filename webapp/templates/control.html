@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Điều khiển pipeline{% endblock %}
+{% block body %}
+<h2>Điều khiển pipeline</h2>
+<p id="summary" style="color:#8a93a6"></p>
+<pre id="log">(log của job đang chạy sẽ hiện ở đây)</pre>
+<p><button class="gray" onclick="stopJob()">⏹ Dừng job hiện tại</button></p>
+<table id="tbl">
+  <thead><tr><th>Bộ truyện</th><th>Dịch</th><th>Dung lượng</th><th>Trạng thái</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<h3>Lịch sử</h3>
+<table id="hist"><tbody></tbody></table>
+<script>
+const badge = s => ({"hoàn thành":"b-done","đang dịch":"b-run","chưa dịch":"b-none","dở dang":"b-part","xếp hàng":"b-queue"}[s]||"b-none");
+async function refresh() {
+  const r = await fetch('/api/status'); const d = await r.json();
+  document.getElementById('summary').textContent =
+    `Disk trống: ${d.disk_free_gb}GB` + (d.current ? ` — đang dịch: ${d.current}` : ' — máy rảnh')
+    + (d.queued.length ? ` — hàng đợi: ${d.queued.join(', ')}` : '');
+  const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
+  for (const s of d.series) {
+    const tr = document.createElement('tr');
+    const busy = s.state === 'đang dịch' || s.state === 'xếp hàng' || s.state === 'hoàn thành';
+    tr.innerHTML = `<td>${s.name}</td><td>${s.out}/${s.in}</td><td>${s.mb} MB</td>
+      <td><span class="badge ${badge(s.state)}">${s.state}</span></td>
+      <td><button ${busy?'disabled':''} onclick="translateS('${s.name}')">Dịch</button></td>`;
+    tb.appendChild(tr);
+  }
+  const hb = document.querySelector('#hist tbody'); hb.innerHTML = '';
+  for (const h of d.history) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${h.at}</td><td>${h.series}</td><td>${h.minutes} phút</td>
+      <td>${h.exit===0?'✅ OK':'❌ exit '+h.exit}</td>`;
+    hb.appendChild(tr);
+  }
+}
+async function translateS(name) {
+  const r = await fetch('/api/translate/'+encodeURIComponent(name), {method:'POST'});
+  const d = await r.json().catch(()=>({}));
+  if (!r.ok) alert(d.detail || 'Lỗi'); else refresh();
+}
+async function stopJob() {
+  const r = await fetch('/api/stop', {method:'POST'}); const d = await r.json();
+  alert(d.result); refresh();
+}
+const log = document.getElementById('log');
+const es = new EventSource('/api/logs/stream');
+es.onmessage = e => { log.textContent += e.data + '\n';
+  if (log.textContent.length > 200000) log.textContent = log.textContent.slice(-100000);
+  log.scrollTop = log.scrollHeight; };
+refresh(); setInterval(refresh, 5000);
+</script>
+{% endblock %}
