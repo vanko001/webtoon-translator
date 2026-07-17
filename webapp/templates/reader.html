@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ series }} — {{ stem }}{% endblock %}
-{% block nav %}<span style="color:#8a93a6;font-size:14px">{{ series }} / {{ stem }}</span>{% endblock %}
+{% block title %}{{ title }} — {{ stem }}{% endblock %}
+{% block nav %}<span style="color:#8a93a6;font-size:14px">{{ title }} / {{ stem }}</span>{% endblock %}
 {% block body %}
 <div style="max-width:820px;margin:0 auto">
   {% for s in slices %}

@@ -6,7 +6,7 @@
   {% for s in series %}
   <a class="card" href="/doc/{{ s.name }}">
     <img loading="lazy" src="/cover/{{ s.name }}" alt="">
-    <div class="t">{{ s.name }}</div>
+    <div class="t" title="{{ s.name }}">{{ s.title }}</div>
     <div class="n">{{ s.n }} chương</div>
   </a>
   {% endfor %}

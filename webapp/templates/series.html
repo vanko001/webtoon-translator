@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ series }}{% endblock %}
+{% block title %}{{ title }}{% endblock %}
 {% block body %}
-<h2>{{ series }}</h2>
+<h2>{{ title }}</h2>
+{% if title != series %}<p style="color:#8a93a6;margin-top:-8px;font-size:13px">{{ series }}</p>{% endif %}
 <div class="list">
   {% for c in chapters %}
   <a href="/doc/{{ series }}/{{ c.stem }}"><span>{{ c.stem }}</span><span>›</span></a>
