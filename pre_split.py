@@ -107,14 +107,16 @@ def split_image(
     Returns:
         Metadata dict chứa thông tin để post_stitch ghép lại.
     """
-    img = Image.open(image_path)
+    # Tiles trung gian lưu JPEG q92 (nhẹ hơn PNG 5-10 lần, không ảnh hưởng
+    # OCR/inpaint) — bộ dài hàng trăm chương không còn làm đầy ổ.
+    img = Image.open(image_path).convert("RGB")
     width, height = img.size
     stem = Path(image_path).stem
 
     # Ảnh đủ ngắn → không cần cắt, copy thẳng
     if height <= tile_height:
-        tile_path = os.path.join(out_dir, f"{stem}_tile_000.png")
-        img.save(tile_path)
+        tile_path = os.path.join(out_dir, f"{stem}_tile_000.jpg")
+        img.save(tile_path, quality=92)
         return {
             "original": image_path,
             "original_size": [width, height],
@@ -144,8 +146,8 @@ def split_image(
     last = len(starts) - 1
     for index, (y, y_end) in enumerate(zip(starts, ends)):
         tile = img.crop((0, y, width, y_end))
-        tile_path = os.path.join(out_dir, f"{stem}_tile_{index:03d}.png")
-        tile.save(tile_path)
+        tile_path = os.path.join(out_dir, f"{stem}_tile_{index:03d}.jpg")
+        tile.save(tile_path, quality=92)
 
         # Overlap trên/dưới để post_stitch biết vùng nào cần cắt bỏ
         tiles.append(

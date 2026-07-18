@@ -93,6 +93,10 @@ DEFAULT_CONFIG = {
     # "slices" = mỗi chương là THƯ MỤC lát JPEG ~2400px (nhẹ hơn 60-85%,
     # web đọc nhanh, không đụng giới hạn JPEG 65500px). "single" = 1 file như cũ.
     "output_format": "slices",
+    # Series mode xử lý theo nhóm N chương (split→dịch→stitch→dọn từng nhóm)
+    # → bộ hàng trăm chương không làm đầy ổ. Context liền mạch trong nhóm;
+    # giữa các nhóm có glossary + character sheet giữ nhất quán.
+    "batch_chapters": 20,
 }
 
 
@@ -451,22 +455,48 @@ def process_series(
     progress: dict,
     done_set: set,
 ) -> int:
-    """Series mode: dịch TẤT CẢ chương trong 1 lần chạy engine.
+    """Series mode: dịch cả bộ theo TỪNG NHÓM chương (batch_chapters, mặc định 20).
 
-    Tiles của mọi chương được gom vào 1 thư mục phẳng (tên tile
-    "chương_tile_xxx" nên natural sort của engine giữ đúng thứ tự đọc)
-    → context dịch chảy liền mạch từ chương đầu đến chương cuối.
-
-    Args:
-        files: Danh sách file ảnh chương (đã natural sort).
-        cfg: Config dict.
-        glossary: Glossary instance.
-        progress: Progress dict (được update in-place).
-        done_set: Chương đã xong (khi --resume) → bỏ qua lúc stitch.
+    Trong mỗi nhóm, tiles gom vào 1 thư mục phẳng → context dịch liền mạch;
+    giữa các nhóm, glossary + hồ sơ nhân vật được cập nhật rồi tiêm cho nhóm sau.
+    Chia nhóm để bộ hàng trăm chương không làm đầy ổ đĩa (chỉ tiles của 1 nhóm
+    tồn tại trên disk tại một thời điểm).
 
     Returns:
         Số chương thành công.
     """
+    pending = [f for f in files if Path(f).stem not in done_set]
+    skipped = len(files) - len(pending)
+    if skipped:
+        print(f"  [skip] {skipped} chương đã xong từ trước")
+    if not pending:
+        return skipped
+
+    group_size = max(1, int(cfg.get("batch_chapters", 20)))
+    groups = [pending[i:i + group_size] for i in range(0, len(pending), group_size)]
+    n_ok_total = 0
+    for gi, group in enumerate(groups):
+        if len(groups) > 1:
+            print(f"\n[series] ── Nhóm {gi + 1}/{len(groups)} ({len(group)} chương) ──")
+        free_gb = shutil.disk_usage("/").free / 1e9
+        if free_gb < 1.2:
+            print(f"[series] DỪNG: disk chỉ còn {free_gb:.1f}GB — dọn bớt rồi chạy lại với --resume")
+            break
+        n_ok = _run_series_group(group, cfg, glossary, progress, f"group-{gi:03d}")
+        n_ok_total += n_ok
+        if n_ok < len(group):
+            print(f"[series] Nhóm {gi + 1} chỉ xong {n_ok}/{len(group)} — vẫn tiếp tục nhóm sau")
+    return skipped + n_ok_total
+
+
+def _run_series_group(
+    pending: list[str],
+    cfg: dict,
+    glossary: Glossary,
+    progress: dict,
+    group_tag: str,
+) -> int:
+    """Dịch 1 nhóm chương: split → engine 1 lần → stitch tăng dần → dọn."""
     import time
 
     tiles_root = os.path.join(cfg["work_dir"], "tiles")
@@ -474,15 +504,13 @@ def process_series(
     os.makedirs(combined_dir, exist_ok=True)
     os.makedirs(cfg["output_dir"], exist_ok=True)
 
-    # 1. Split các chương CHƯA xong, gom tiles vào combined_dir (hardlink đỡ tốn disk).
-    #    Chương trong done_set (--resume) không đưa vào engine.
-    pending = [f for f in files if Path(f).stem not in done_set]
-    skipped = len(files) - len(pending)
-    if skipped:
-        print(f"  [skip] {skipped} chương đã xong từ trước")
+    # 1. Split các chương của nhóm, gom tiles vào combined_dir (hardlink)
     metas = {}
     chapter_tile_stems: dict[str, list[str]] = {}
     for f in pending:
+        if shutil.disk_usage("/").free / 1e9 < 1.0:
+            print("[series] DỪNG split: disk còn dưới 1GB")
+            return 0
         stem = Path(f).stem
         meta_path = split_chapter(
             os.path.join(cfg["input_dir"], f),
@@ -496,7 +524,7 @@ def process_series(
         chapter_tile_stems[stem] = [Path(t["file"]).stem for t in meta["tiles"]]
         chapter_tiles = os.path.join(tiles_root, stem)
         for t in os.listdir(chapter_tiles):
-            if not t.endswith(".png"):
+            if not t.endswith((".png", ".jpg")):
                 continue
             src = os.path.join(chapter_tiles, t)
             dst = os.path.join(combined_dir, t)
@@ -506,26 +534,22 @@ def process_series(
                 except OSError:
                     shutil.copy(src, dst)
 
-    if not pending:
-        return skipped
-
-    # 2. Export glossary tích lũy từ lần chạy trước (nếu có)
+    # 2. Export glossary + hồ sơ nhân vật MỚI NHẤT (nhóm trước vừa bổ sung)
     mit_glossary = None
     if cfg["glossary_export_mit"] and glossary.entries:
         mit_glossary = os.path.join(cfg["work_dir"], "glossary_mit.txt")
         glossary.to_mit_format(mit_glossary)
 
-    # 3. Chạy engine cho toàn bộ series, STITCH TĂNG DẦN: chương nào đủ tiles
-    #    là ghép và xuất ảnh ngay, không đợi cả series xong.
+    # 3. Chạy engine cho nhóm, STITCH TĂNG DẦN: chương nào đủ tiles là xuất ngay
     translated_dir = os.path.join(cfg["work_dir"], "translated_all")
     os.makedirs(translated_dir, exist_ok=True)
-    text_file = os.path.join(cfg["work_dir"], "texts", "series.txt")
+    text_file = os.path.join(cfg["work_dir"], "texts", f"{group_tag}.txt")
     gpt_config = build_gpt_config(cfg, glossary)
     cmd_env = _mit_cmd_env(
         combined_dir, translated_dir, text_file, cfg, mit_glossary, gpt_config
     )
     if cmd_env is None:
-        return skipped
+        return 0
     cmd, env = cmd_env
     print(f"[mit] Dịch {combined_dir} -> {translated_dir} (stitch tăng dần)")
     proc = subprocess.Popen(cmd, env=env)
@@ -573,10 +597,11 @@ def process_series(
                                         os.remove(os.path.join(d, n))
                                     except FileNotFoundError:
                                         pass
-                        try:
-                            os.remove(os.path.join(combined_dir, f"{t}.png"))
-                        except FileNotFoundError:
-                            pass
+                        for ext in (".png", ".jpg"):
+                            try:
+                                os.remove(os.path.join(combined_dir, f"{t}{ext}"))
+                            except FileNotFoundError:
+                                pass
             else:
                 print(f"  ⚠️  Stitch thất bại: {stem}")
                 stitched.add(stem)  # tránh retry vô hạn
@@ -589,20 +614,19 @@ def process_series(
     if proc.returncode != 0:
         print(f"[mit] LỖI (exit {proc.returncode}) — chương đã stitch vẫn giữ nguyên")
 
-    # 4. Update glossary + hồ sơ nhân vật từ text đã dịch
+    # 4. Update glossary + hồ sơ nhân vật từ text nhóm này (nhóm sau hưởng ngay)
     if cfg["glossary_extract_llm"]:
         try:
             update_glossary_from_text_file(text_file, cfg, glossary)
         except Exception as e:
             print(f"  [glossary] Skip extract (lỗi: {e})")
 
-    # 5. Dọn phần còn lại của work nếu trọn vẹn
+    # 5. Dọn phần còn lại của work nếu nhóm trọn vẹn
     n_ok = len([s for s in stitched if s in progress["completed"]])
     if cfg.get("clean_work") and n_ok == len(pending):
         for d in (combined_dir, translated_dir):
             shutil.rmtree(d, ignore_errors=True)
-        print("  [clean] Đã xóa tiles + translated trong work/")
-    return skipped + n_ok
+    return n_ok
 
 
 def parse_translations(text_file: str) -> str:
